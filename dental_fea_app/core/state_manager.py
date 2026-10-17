@@ -30,6 +30,14 @@ class StateManager(QObject):
     # 2D 인터랙션 모드 ('normal', 'draw', 'measure_length', 'measure_angle')
     interaction_mode_changed = Signal(str)
 
+    # 분할(Segmentation) Signals
+    segmentation_result_changed = Signal(object)        # SegmentationResult or None
+    segmentation_visibility_changed = Signal(dict)      # {'show_bone': bool, 'show_cortical': bool, 'show_cancellous': bool, 'opacity': float}
+
+    # 임플란트(Implant) Signals
+    implant_model_changed = Signal(object)              # ImplantModel or None
+    implant_pose_changed = Signal(object)               # ImplantModel or None
+
 
 
     def __init__(self, parent: Optional[QObject] = None):
@@ -55,6 +63,83 @@ class StateManager(QObject):
         self._metadata: dict = {}
         self.series_path: Optional[str] = None
         self._roi_bounds: Optional[Tuple[float, float, float, float, float, float]] = None
+
+        # 분할(Segmentation) 상태
+        self._segmentation_result = None
+        self._seg_visibility = {
+            "show_bone": False,
+            "show_cortical": True,
+            "show_cancellous": True,
+            "opacity": 0.45
+        }
+        self._combined_label_vtk: Optional[vtk.vtkImageData] = None
+
+        # 임플란트(Implant) 상태
+        self._implant_model = None
+
+    @property
+    def implant_model(self):
+        return self._implant_model
+
+    def set_implant_model(self, model):
+        """임플란트 모델 인스턴스 등록 및 옵저버 바인딩"""
+        if self._implant_model is not None:
+            self._implant_model.remove_observer(self._on_implant_pose_updated)
+
+        self._implant_model = model
+
+        if self._implant_model is not None:
+            self._implant_model.add_observer(self._on_implant_pose_updated)
+
+        self.implant_model_changed.emit(self._implant_model)
+        self.implant_pose_changed.emit(self._implant_model)
+
+    def _on_implant_pose_updated(self, model):
+        """ImplantModel 내부 옵저버 콜백 -> Qt Signal 발행"""
+        self.implant_pose_changed.emit(model)
+
+    @property
+    def segmentation_result(self):
+        return self._segmentation_result
+
+    @property
+    def segmentation_visibility(self) -> dict:
+        return self._seg_visibility
+
+    @property
+    def combined_label_vtk(self) -> Optional[vtk.vtkImageData]:
+        return self._combined_label_vtk
+
+    def set_segmentation_result(self, result):
+        """
+        분할 결과를 등록하고 2D MPR 및 3D 표면용 vtkImageData 라벨 볼륨을 생성합니다.
+        라벨 매핑: 0: 배경, 1: 피질골(Cortical), 2: 수질골(Cancellous)
+        """
+        self._segmentation_result = result
+        if result is not None and self._vtk_image is not None:
+            from dental_fea_app.segmentation.cortical_cancellous import mask_to_vtk_image
+            # 라벨 맵 구성: uint8
+            nz, ny, nx = result.bone_mask.shape
+            label_map = np.zeros((nz, ny, nx), dtype=np.uint8)
+            label_map[result.cancellous_mask] = 2
+            label_map[result.cortical_mask] = 1
+
+            self._combined_label_vtk = mask_to_vtk_image(
+                mask=label_map,
+                reference_vtk=self._vtk_image,
+                foreground_value=1
+            )
+        else:
+            self._combined_label_vtk = None
+
+        self.segmentation_result_changed.emit(self._segmentation_result)
+
+    def set_segmentation_visibility(self, visibility_dict: dict):
+        """
+        분할 마스크 가시성 및 불투명도 설정을 갱신하고 신호를 발생합니다.
+        """
+        self._seg_visibility.update(visibility_dict)
+        self.segmentation_visibility_changed.emit(self._seg_visibility)
 
     @property
     def roi_bounds(self) -> Optional[Tuple[float, float, float, float, float, float]]:
@@ -182,6 +267,8 @@ class StateManager(QObject):
         self._current_x = center_x
         self._current_y = center_y
         self._current_z = center_z
+
+        self.set_segmentation_result(None)
 
         self.volume_loaded.emit(self._vtk_image)
         self.coordinates_changed.emit(self._current_x, self._current_y, self._current_z)

@@ -15,6 +15,8 @@ from PySide6.QtCore import Qt
 from dental_fea_app.config import WL_PRESETS, DEFAULT_PRESET_NAME
 from dental_fea_app.core.state_manager import StateManager
 from dental_fea_app.imaging.dicom_reader import DicomReader
+from dental_fea_app.ui.segmentation.segmentation_panel import SegmentationPanel
+from dental_fea_app.ui.placement.implant_panel import ImplantPanel
 
 
 class ControlPanel(QWidget):
@@ -172,26 +174,30 @@ class ControlPanel(QWidget):
         return group
 
     def _create_workflow_tabs(self) -> QTabWidget:
-        tabs = QTabWidget(self)
-        tabs.setFixedHeight(180)
+        self.workflow_tabs = QTabWidget(self)
+        tabs = self.workflow_tabs
 
         # 탭 1: Phase 1 영상 정보
         t1 = QWidget()
         t1_layout = QVBoxLayout(t1)
         t1_layout.addWidget(QLabel("Phase 1: 2D MPR 3분할 뷰어\n및 실시간 십자선 동기화 활성 상태", t1))
+        t1_layout.addStretch()
         tabs.addTab(t1, "1. 영상")
 
-        # 탭 2: Phase 2 분할 (준비)
-        t2 = QWidget()
-        t2_layout = QVBoxLayout(t2)
-        t2_layout.addWidget(QLabel("Phase 2: 피질골/수질골 분할\nThreshold 및 형태학 필터 (다음 단계)", t2))
-        tabs.addTab(t2, "2. 분할")
+        # 탭 2: Phase 2 분할 (피질골/수질골 분할 패널)
+        self.segmentation_panel = SegmentationPanel(self.state_mgr, self)
+        tabs.addTab(self.segmentation_panel, "2. 분할")
 
-        # 탭 3: Phase 3 임플란트 & FEA (준비)
-        t3 = QWidget()
-        t3_layout = QVBoxLayout(t3)
-        t3_layout.addWidget(QLabel("Phase 3: 임플란트 STL 배치,\nGmsh 메쉬 생성 및 CalculiX 연동", t3))
-        tabs.addTab(t3, "3. 해석")
+        # 탭 3: Phase 2 임플란트 배치 패널
+        self.implant_panel = ImplantPanel(self.state_mgr, self)
+        tabs.addTab(self.implant_panel, "3. 임플란트")
+
+        # 탭 4: Phase 3 FEA 해석 (준비)
+        t4 = QWidget()
+        t4_layout = QVBoxLayout(t4)
+        t4_layout.addWidget(QLabel("Phase 3: Gmsh 메쉬 생성 및\nCalculiX 유한요소해석(FEA) 연동", t4))
+        t4_layout.addStretch()
+        tabs.addTab(t4, "4. 해석")
 
         return tabs
 

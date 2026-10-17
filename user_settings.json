@@ -5,7 +5,7 @@
       "show_ruler": false,
       "rotation": 0,
       "flip_h": false,
-      "flip_v": false
+      "flip_v": true
     },
     "Coronal": {
       "show_crosshair": true,
@@ -29,7 +29,7 @@
     "show_coronal_plane": false,
     "show_sagittal_plane": false,
     "preset_index": 0,
-    "geometry": "01d9d0cb0003000000000582000000db00000919000003cf000005820000010000000919000003cf00000000000000000d70000005820000010000000919000003cf",
+    "geometry": "01d9d0cb0003000000000242000000a1000005d90000039500000242000000c6000005d90000039500000000000000000d7000000242000000c6000005d900000395",
     "roi_apply": true,
     "roi_box": false
   },
@@ -40,22 +40,22 @@
   },
   "mpr_container": {
     "v_sizes": [
-      597,
-      597
+      554,
+      496
     ],
     "h_sizes": [
-      683,
-      682
+      595,
+      631
     ]
   },
   "main_window": {
-    "geometry": "01d9d0cb00030000000006280000003700000c7e0000056e000006280000005c00000c7e0000056e00000000000000000d70000006280000005c00000c7e0000056e"
+    "geometry": "01d9d0cb00030000000006d80000004c00000ca3000004f3000006d80000007100000ca3000004f300000000000000000d70000006d80000007100000ca3000004f3"
   },
   "recent_files": [
-    "/home/kim/Documents/project/dental_FEA/samples/Class 3 malocclusion",
     "/test/path/dir4",
     "/test/path/file6.mha",
     "/test/path/file5.dcm",
-    "/test/path/file3.mha"
+    "/test/path/file3.mha",
+    "/test/path/dir2"
   ]
 }

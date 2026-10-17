@@ -14,7 +14,7 @@ import numpy as np
 import vtk
 from vtkmodules.qt.QVTKRenderWindowInteractor import QVTKRenderWindowInteractor
 from PySide6.QtWidgets import QWidget, QVBoxLayout
-from PySide6.QtCore import Qt, QPoint
+from PySide6.QtCore import Qt, QPoint, QTimer
 from PySide6.QtGui import QColor
 
 from dental_fea_app.config import (
@@ -116,12 +116,27 @@ class MPRWidget(QWidget):
         self.state_mgr.volume_loaded.connect(self.on_volume_loaded)
         self.state_mgr.roi_setting_mode_toggled.connect(self._on_roi_mode_toggled)
         self.state_mgr.interaction_mode_changed.connect(self._on_interaction_mode_changed)
+        self.state_mgr.segmentation_result_changed.connect(self._on_segmentation_result_changed)
+        self.state_mgr.segmentation_visibility_changed.connect(self._on_segmentation_visibility_changed)
+        self.state_mgr.implant_model_changed.connect(self._on_implant_model_changed)
+        self.state_mgr.implant_pose_changed.connect(self._on_implant_pose_changed)
+
+        # 2D 마스크 오버레이 파이프라인 초기화
+        self._init_mask_overlay()
+
+        # 2D 임플란트 단면 윤곽선(Cutter) 파이프라인 초기화
+        self._init_implant_contour()
 
         # 2D 드로잉 및 계측 오버레이 초기화
         self._init_drawing_and_measurement_actors()
 
-        # 이벤트 필터
+        # 연속 렌더링 스로틀 타이머 (30ms 디바운스)
+        self._implant_render_timer = QTimer(self)
+        self._implant_render_timer.setSingleShot(True)
+        self._implant_render_timer.setInterval(30)
+        self._implant_render_timer.timeout.connect(self._do_implant_render)
 
+        # 이벤트 필터
         self.vtkWidget.installEventFilter(self)
         self.setMouseTracking(True)
         self.vtkWidget.setMouseTracking(True)
@@ -232,6 +247,153 @@ class MPRWidget(QWidget):
         self.roi_rect_actor.GetProperty().LightingOff()
         self.roi_rect_actor.SetVisibility(False)
         self.renderer.AddActor(self.roi_rect_actor)
+
+    def _init_mask_overlay(self):
+        """2D 분할 마스크(피질골/수질골) 오버레이 파이프라인 초기화"""
+        self.mask_lut = vtk.vtkLookupTable()
+        self.mask_lut.SetNumberOfTableValues(3)
+        self.mask_lut.SetRange(0, 2)
+        # 0: 배경 (완전 투명)
+        self.mask_lut.SetTableValue(0, 0.0, 0.0, 0.0, 0.0)
+        # 1: 피질골 (Cortical: 빨강 1.0, 0.2, 0.2, alpha)
+        self.mask_lut.SetTableValue(1, 1.0, 0.2, 0.2, 0.35)
+        # 2: 수질골 (Cancellous: 파랑 0.2, 0.6, 1.0, alpha)
+        self.mask_lut.SetTableValue(2, 0.2, 0.6, 1.0, 0.35)
+        self.mask_lut.Build()
+
+        self.mask_reslice_mapper = vtk.vtkImageResliceMapper()
+        self.mask_reslice_mapper.SliceFacesCameraOff()
+        self.mask_reslice_mapper.SetSlicePlane(self.slice_plane)  # 원본 영상 슬라이스 평면 공유
+
+        self.mask_image_property = vtk.vtkImageProperty()
+        self.mask_image_property.SetLookupTable(self.mask_lut)
+        self.mask_image_property.UseLookupTableScalarRangeOn()
+        self.mask_image_property.SetInterpolationTypeToNearest()  # 마스크 경계 정밀 표시
+
+        self.mask_image_slice = vtk.vtkImageSlice()
+        self.mask_image_slice.SetMapper(self.mask_reslice_mapper)
+        self.mask_image_slice.SetProperty(self.mask_image_property)
+        self.mask_image_slice.SetVisibility(False)
+
+        self.renderer.AddViewProp(self.mask_image_slice)
+
+    def _on_segmentation_result_changed(self, result):
+        """분할 결과가 갱신되었을 때 마스크 리슬라이서에 볼륨 연결"""
+        if self.state_mgr.combined_label_vtk is not None:
+            self.mask_reslice_mapper.SetInputData(self.state_mgr.combined_label_vtk)
+            self._apply_mask_visibility()
+        else:
+            self.mask_image_slice.SetVisibility(False)
+        self.render()
+
+    def _on_segmentation_visibility_changed(self, vis: dict):
+        """피질골/수질골 가시성 및 불투명도 설정 반영"""
+        self._apply_mask_visibility()
+        self.render()
+
+    def _apply_mask_visibility(self):
+        if self.state_mgr.combined_label_vtk is None or self.state_mgr.segmentation_result is None:
+            self.mask_image_slice.SetVisibility(False)
+            return
+
+        vis = self.state_mgr.segmentation_visibility
+        opacity = vis.get("opacity", 0.35)
+        show_cortical = vis.get("show_cortical", True)
+        show_cancellous = vis.get("show_cancellous", True)
+
+        alpha_c = opacity if show_cortical else 0.0
+        alpha_m = opacity if show_cancellous else 0.0
+
+        self.mask_lut.SetTableValue(1, 1.0, 0.2, 0.2, alpha_c)
+        self.mask_lut.SetTableValue(2, 0.2, 0.6, 1.0, alpha_m)
+        self.mask_lut.Modified()
+
+        has_any = (alpha_c > 0.0 or alpha_m > 0.0)
+        self.mask_image_slice.SetVisibility(has_any)
+
+    def _init_implant_contour(self):
+        """
+        2D MPR 단면 상에 임플란트 단면 윤곽선(Cutter)을 노란색 실선(두께 2)으로 표시하는 파이프라인.
+        """
+        self.implant_cut_plane = vtk.vtkPlane()
+        self.implant_cut_plane.SetNormal(self.normal)
+        self.implant_cut_plane.SetOrigin(0.0, 0.0, 0.0)
+
+        self.implant_cutter = vtk.vtkCutter()
+        self.implant_cutter.SetCutFunction(self.implant_cut_plane)
+        self.implant_cutter.GenerateCutScalarsOff()
+
+        # 영상 위에 선명하게 보이도록 약간 앞쪽(카메라 방향)으로 오프셋을 주기 위한 Transform
+        self.implant_contour_transform = vtk.vtkTransform()
+        self.implant_contour_tf_filter = getattr(vtk, "vtkTransformFilter", vtk.vtkTransformPolyDataFilter)()
+        self.implant_contour_tf_filter.SetInputConnection(self.implant_cutter.GetOutputPort())
+        self.implant_contour_tf_filter.SetTransform(self.implant_contour_transform)
+
+        self.implant_contour_mapper = vtk.vtkPolyDataMapper()
+        self.implant_contour_mapper.SetInputConnection(self.implant_contour_tf_filter.GetOutputPort())
+        self.implant_contour_mapper.ScalarVisibilityOff()
+
+        self.implant_contour_actor = vtk.vtkActor()
+        self.implant_contour_actor.SetMapper(self.implant_contour_mapper)
+        # 눈에 띄는 밝은 노란색 (#FFE066)
+        self.implant_contour_actor.GetProperty().SetColor(1.0, 0.88, 0.2)
+        self.implant_contour_actor.GetProperty().SetLineWidth(2.0)
+        self.implant_contour_actor.GetProperty().LightingOff()
+        self.implant_contour_actor.SetVisibility(False)
+
+        self.renderer.AddActor(self.implant_contour_actor)
+
+    def _on_implant_model_changed(self, model):
+        """임플란트 모델 객체 변경 시 단면 윤곽선 갱신"""
+        self._request_implant_update()
+
+    def _on_implant_pose_changed(self, model):
+        """임플란트 포즈 변경 시 단면 윤곽선 갱신"""
+        self._request_implant_update()
+
+    def _request_implant_update(self):
+        if not self._implant_render_timer.isActive():
+            self._implant_render_timer.start()
+
+    def _do_implant_render(self):
+        self._update_implant_contour()
+        self.render()
+
+    def _update_implant_contour(self):
+        """현재 슬라이스 평면과 임플란트 메쉬의 교차 단면 윤곽선을 계산하고 액터 위치를 갱신합니다."""
+        model = self.state_mgr.implant_model
+        if model is None or model.raw_polydata is None or self.state_mgr.vtk_image is None:
+            self.implant_contour_actor.SetVisibility(False)
+            return
+
+        # 1. 커터 평면 위치를 현재 슬라이스 평면과 일치
+        x, y, z = self.state_mgr.current_coords
+        self.implant_cut_plane.SetNormal(self.normal)
+        self.implant_cut_plane.SetOrigin(x, y, z)
+
+        # 2. 임플란트 월드 변환 폴리데이터를 커터 입력으로 연결
+        poly_w = model.get_transformed_polydata()
+        self.implant_cutter.SetInputData(poly_w)
+        self.implant_cutter.Update()
+
+        cut_output = self.implant_cutter.GetOutput()
+        has_lines = (cut_output is not None and cut_output.GetNumberOfPoints() > 0)
+        self.implant_contour_actor.SetVisibility(has_lines)
+
+        if has_lines:
+            # 영상 위에 겹쳐 보이도록 카메라 방향으로 약간 앞쪽(0.25mm) 오프셋 적용
+            fh = -1.0 if self._flip_h else 1.0
+            fv = -1.0 if self._flip_v else 1.0
+            norm_sign = fh * fv
+            offset_dist = 0.25 * norm_sign
+
+            dx = self.normal[0] * offset_dist
+            dy = self.normal[1] * offset_dist
+            dz = self.normal[2] * offset_dist
+
+            self.implant_contour_transform.Identity()
+            self.implant_contour_transform.Translate(dx, dy, dz)
+            self.implant_contour_tf_filter.Update()
 
     def _init_drawing_and_measurement_actors(self):
         """임시 드래그 미리보기 및 계측 렌더링용 액터 풀 초기화"""
@@ -553,6 +715,7 @@ class MPRWidget(QWidget):
         self.camera.SetPosition(pos)
         self.camera.SetClippingRange(dist * 0.1, dist * 3.0)
         self._update_overlays()
+        self._update_implant_contour()
 
     def _update_hover_crosshair(self, wx: float, wy: float, wz: float):
         """마우스 이동에 따른 실시간 호버 십자선 (검은색) 업데이트"""

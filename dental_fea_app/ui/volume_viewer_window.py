@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (
     QToolBar, QComboBox, QPushButton, QLabel, QStatusBar,
     QCheckBox, QSlider, QFrame, QToolButton, QGroupBox
 )
-from PySide6.QtCore import Qt, Signal, QSize
+from PySide6.QtCore import Qt, Signal, QSize, QTimer
 from PySide6.QtGui import QAction, QMouseEvent, QIcon, QColor
 
 from dental_fea_app.core.state_manager import StateManager
@@ -97,6 +97,12 @@ class VolumeViewerWindow(QMainWindow):
         style = vtk.vtkInteractorStyleTrackballCamera()
         self.vtkWidget.SetInteractorStyle(style)
 
+        # 3D 렌더링 스로틀 타이머 (마우스 연속 드래그 시 3D 재렌더링 부하 방지)
+        self._render_timer = QTimer(self)
+        self._render_timer.setSingleShot(True)
+        self._render_timer.setInterval(60)  # 최대 약 16 FPS로 3D 렌더 제한
+        self._render_timer.timeout.connect(self._do_render)
+
         # 볼륨 렌더링 파이프라인
         self.volume_mapper = vtk.vtkSmartVolumeMapper()
         self.volume_mapper.SetRequestedRenderModeToGPU()
@@ -151,9 +157,25 @@ class VolumeViewerWindow(QMainWindow):
         # 상태 관리자 신호 연결
         self.state_mgr.volume_loaded.connect(self.on_volume_loaded)
         self.state_mgr.coordinates_changed.connect(self.on_coordinates_changed)
+        self.state_mgr.segmentation_result_changed.connect(self._on_segmentation_result_changed)
+        self.state_mgr.segmentation_visibility_changed.connect(self._on_segmentation_visibility_changed)
+        self.state_mgr.implant_model_changed.connect(self._on_implant_model_changed)
+        self.state_mgr.implant_pose_changed.connect(self._on_implant_pose_changed)
+
+        # 3D 분할 표면 메쉬 액터 초기화
+        self._init_segmentation_surface_actors()
+
+        # 3D 임플란트 메쉬 액터 초기화
+        self._init_implant_actor()
 
         if self.state_mgr.vtk_image is not None:
             self.on_volume_loaded(self.state_mgr.vtk_image)
+
+        if self.state_mgr.segmentation_result is not None:
+            self._on_segmentation_result_changed(self.state_mgr.segmentation_result)
+
+        if self.state_mgr.implant_model is not None:
+            self._on_implant_model_changed(self.state_mgr.implant_model)
 
     def _init_3d_planes(self):
         """3D 공간 내 반투명 슬라이스 평면(Axial, Coronal, Sagittal) 액터 초기화"""
@@ -689,31 +711,47 @@ class VolumeViewerWindow(QMainWindow):
 
     def on_coordinates_changed(self, x: float, y: float, z: float):
         """2D MPR에서 클릭/이동된 월드 좌표에 맞춰 3D 슬라이스 평면 위치 동조"""
-        if self.state_mgr.vtk_image is None:
+        if self.state_mgr.vtk_image is None or not self.isVisible():
+            return
+
+        # 3D 슬라이스 평면이 하나라도 켜져 있는지 확인
+        has_visible_plane = (
+            self.axial_plane_actor.GetVisibility()
+            or self.coronal_plane_actor.GetVisibility()
+            or self.sagittal_plane_actor.GetVisibility()
+        )
+        has_active_clip = (self._current_clip_mode != "O")
+
+        # 평면 표시도 없고 클리핑도 활성화되어 있지 않다면 3D 렌더링 생략 (엄청난 성능 향상)
+        if not has_visible_plane and not has_active_clip:
             return
 
         bx0, bx1, by0, by1, bz0, bz1 = self.state_mgr.bounds
 
         # Axial Plane: XY 평면, Z = z
-        self.axial_plane_source.SetOrigin(bx0, by0, z)
-        self.axial_plane_source.SetPoint1(bx1, by0, z)
-        self.axial_plane_source.SetPoint2(bx0, by1, z)
+        if self.axial_plane_actor.GetVisibility():
+            self.axial_plane_source.SetOrigin(bx0, by0, z)
+            self.axial_plane_source.SetPoint1(bx1, by0, z)
+            self.axial_plane_source.SetPoint2(bx0, by1, z)
 
         # Coronal Plane: XZ 평면, Y = y
-        self.coronal_plane_source.SetOrigin(bx0, y, bz0)
-        self.coronal_plane_source.SetPoint1(bx1, y, bz0)
-        self.coronal_plane_source.SetPoint2(bx0, y, bz1)
+        if self.coronal_plane_actor.GetVisibility():
+            self.coronal_plane_source.SetOrigin(bx0, y, bz0)
+            self.coronal_plane_source.SetPoint1(bx1, y, bz0)
+            self.coronal_plane_source.SetPoint2(bx0, y, bz1)
 
         # Sagittal Plane: YZ 평면, X = x
-        self.sagittal_plane_source.SetOrigin(x, by0, bz0)
-        self.sagittal_plane_source.SetPoint1(x, by1, bz0)
-        self.sagittal_plane_source.SetPoint2(x, by0, bz1)
+        if self.sagittal_plane_actor.GetVisibility():
+            self.sagittal_plane_source.SetOrigin(x, by0, bz0)
+            self.sagittal_plane_source.SetPoint1(x, by1, bz0)
+            self.sagittal_plane_source.SetPoint2(x, by0, bz1)
 
         # 만약 활성화된 클리핑 플레인이 있다면 위치 업데이트
-        if self._current_clip_mode != "O":
+        if has_active_clip:
             self._apply_clipping_plane()
 
-        self.render()
+        # 마우스 연속 드래그 시 3D 렌더링 스로틀링 적용
+        self.request_render()
 
     def _toggle_clip(self, axis_char: str, sign: int):
         """
@@ -889,11 +927,25 @@ class VolumeViewerWindow(QMainWindow):
         self.renderer.ResetCamera()
         self.render()
 
-    def render(self):
+    def request_render(self):
+        """3D 렌더링 요청을 스로틀링하여 UI 반응성을 확보합니다."""
+        if not self.isVisible() or self.state_mgr.vtk_image is None:
+            return
+        if not self._render_timer.isActive():
+            self._render_timer.start()
+
+    def _do_render(self):
+        """실제 VTK RenderWindow 렌더링 실행"""
         if not self.isVisible() or self.state_mgr.vtk_image is None:
             return
         if self.vtkWidget.GetRenderWindow():
             self.vtkWidget.GetRenderWindow().Render()
+
+    def render(self):
+        """즉시 3D 렌더링을 실행합니다."""
+        if self._render_timer.isActive():
+            self._render_timer.stop()
+        self._do_render()
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -932,6 +984,22 @@ class VolumeViewerWindow(QMainWindow):
         except Exception:
             pass
         try:
+            self.state_mgr.segmentation_result_changed.disconnect(self._on_segmentation_result_changed)
+        except Exception:
+            pass
+        try:
+            self.state_mgr.segmentation_visibility_changed.disconnect(self._on_segmentation_visibility_changed)
+        except Exception:
+            pass
+        try:
+            self.state_mgr.implant_model_changed.disconnect(self._on_implant_model_changed)
+        except Exception:
+            pass
+        try:
+            self.state_mgr.implant_pose_changed.disconnect(self._on_implant_pose_changed)
+        except Exception:
+            pass
+        try:
             if self._orient_widget_enabled and self.orient_widget:
                 self.orient_widget.SetEnabled(0)
                 self._orient_widget_enabled = False
@@ -939,4 +1007,119 @@ class VolumeViewerWindow(QMainWindow):
             pass
         self.window_closed.emit()
         super().closeEvent(event)
+
+    def _init_segmentation_surface_actors(self):
+        """3D 분할 표면 메쉬(피질골, 수질골) 파이프라인 초기화"""
+        # 1. 피질골 서피스 파이프라인 (빨간색/분홍색 계열)
+        self.cortical_extractor = vtk.vtkFlyingEdges3D()
+        self.cortical_extractor.ComputeNormalsOn()
+        self.cortical_extractor.SetValue(0, 0.5)  # cortical_mask (0 or 1) 경계
+
+        self.cortical_mapper = vtk.vtkPolyDataMapper()
+        self.cortical_mapper.SetInputConnection(self.cortical_extractor.GetOutputPort())
+        self.cortical_mapper.ScalarVisibilityOff()
+
+        self.cortical_actor = vtk.vtkActor()
+        self.cortical_actor.SetMapper(self.cortical_mapper)
+        self.cortical_actor.GetProperty().SetColor(0.9, 0.4, 0.4)
+        self.cortical_actor.GetProperty().SetOpacity(0.5)
+        self.cortical_actor.GetProperty().SetSpecular(0.2)
+        self.cortical_actor.GetProperty().SetSpecularPower(10.0)
+        self.cortical_actor.SetVisibility(False)
+        self.renderer.AddActor(self.cortical_actor)
+
+        # 2. 수질골 서피스 파이프라인 (파란색/연청색 계열)
+        self.cancellous_extractor = vtk.vtkFlyingEdges3D()
+        self.cancellous_extractor.ComputeNormalsOn()
+        self.cancellous_extractor.SetValue(0, 0.5)  # cancellous_mask (0 or 1) 경계
+
+        self.cancellous_mapper = vtk.vtkPolyDataMapper()
+        self.cancellous_mapper.SetInputConnection(self.cancellous_extractor.GetOutputPort())
+        self.cancellous_mapper.ScalarVisibilityOff()
+
+        self.cancellous_actor = vtk.vtkActor()
+        self.cancellous_actor.SetMapper(self.cancellous_mapper)
+        self.cancellous_actor.GetProperty().SetColor(0.3, 0.7, 0.9)
+        self.cancellous_actor.GetProperty().SetOpacity(0.5)
+        self.cancellous_actor.GetProperty().SetSpecular(0.2)
+        self.cancellous_actor.GetProperty().SetSpecularPower(10.0)
+        self.cancellous_actor.SetVisibility(False)
+        self.renderer.AddActor(self.cancellous_actor)
+
+    def _on_segmentation_result_changed(self, result):
+        """분할 결과가 변경되었을 때 3D 표면 추출기 입력 연결 및 갱신"""
+        if result is not None and self.state_mgr.vtk_image is not None:
+            from dental_fea_app.segmentation.cortical_cancellous import mask_to_vtk_image
+            # 피질골 마스크 VTK 생성 및 연결
+            vtk_cortical = mask_to_vtk_image(result.cortical_mask, self.state_mgr.vtk_image)
+            self.cortical_extractor.SetInputData(vtk_cortical)
+
+            # 수질골 마스크 VTK 생성 및 연결
+            vtk_cancellous = mask_to_vtk_image(result.cancellous_mask, self.state_mgr.vtk_image)
+            self.cancellous_extractor.SetInputData(vtk_cancellous)
+
+            self._apply_segmentation_visibility()
+        else:
+            self.cortical_actor.SetVisibility(False)
+            self.cancellous_actor.SetVisibility(False)
+        self.render()
+
+    def _on_segmentation_visibility_changed(self, vis: dict):
+        """피질골/수질골 3D 표면 가시성 및 불투명도 변경 반영"""
+        self._apply_segmentation_visibility()
+        self.render()
+
+    def _apply_segmentation_visibility(self):
+        if self.state_mgr.segmentation_result is None:
+            self.cortical_actor.SetVisibility(False)
+            self.cancellous_actor.SetVisibility(False)
+            return
+
+        vis = self.state_mgr.segmentation_visibility
+        opacity = vis.get("opacity", 0.5)
+        # show_3d_surface가 명시적으로 지정되지 않은 경우(예: 직접 state_mgr 호출)는 기본 True 처리
+        show_3d = vis.get("show_3d_surface", True)
+        show_cortical = vis.get("show_cortical", True) and show_3d
+        show_cancellous = vis.get("show_cancellous", True) and show_3d
+
+        self.cortical_actor.SetVisibility(show_cortical)
+        self.cortical_actor.GetProperty().SetOpacity(opacity)
+
+        self.cancellous_actor.SetVisibility(show_cancellous)
+        self.cancellous_actor.GetProperty().SetOpacity(opacity)
+
+    def _init_implant_actor(self):
+        """3D 임플란트 서피스 액터 파이프라인 초기화 (골드/티타늄 색상)"""
+        self.implant_mapper = vtk.vtkPolyDataMapper()
+        self.implant_actor = vtk.vtkActor()
+        self.implant_actor.SetMapper(self.implant_mapper)
+
+        # 치과 임플란트 티타늄/골드 메탈릭 재질
+        prop = self.implant_actor.GetProperty()
+        prop.SetColor(1.0, 0.82, 0.28)  # 밝은 골드/티타늄
+        prop.SetAmbient(0.3)
+        prop.SetDiffuse(0.8)
+        prop.SetSpecular(0.6)
+        prop.SetSpecularPower(30.0)
+        prop.SetOpacity(1.0)
+        self.implant_actor.SetVisibility(False)
+        self.renderer.AddActor(self.implant_actor)
+
+    def _on_implant_model_changed(self, model):
+        """임플란트 모델이 변경되었을 때 3D 액터 갱신"""
+        self._update_implant_actor()
+
+    def _on_implant_pose_changed(self, model):
+        """임플란트 포즈(위치/자세)가 변경되었을 때 3D 액터 갱신"""
+        self._update_implant_actor()
+
+    def _update_implant_actor(self):
+        model = self.state_mgr.implant_model
+        if model is not None and model.raw_polydata is not None:
+            poly_w = model.get_transformed_polydata()
+            self.implant_mapper.SetInputData(poly_w)
+            self.implant_actor.SetVisibility(True)
+        else:
+            self.implant_actor.SetVisibility(False)
+        self.request_render()
 

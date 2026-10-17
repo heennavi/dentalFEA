@@ -134,12 +134,21 @@ def split_cortical_cancellous(
     sampling = (float(spacing[2]), float(spacing[1]), float(spacing[0]))
 
     if method == "distance":
-        # EDT: bone_mask 내부의 각 복셀에서 가장 가까운 배경(0)까지의 물리적 거리(mm) 계산
-        edt = scipy.ndimage.distance_transform_edt(bone_mask, sampling=sampling)
+        # EDT 성능 최적화: 전체 볼륨 대신 bone_mask가 존재하는 3D 바운딩 박스 영역만 잘라서 계산
+        pts = np.argwhere(bone_mask)
+        z0, y0, x0 = pts.min(axis=0)
+        z1, y1, x1 = pts.max(axis=0) + 1
 
-        # 뼈 외곽 표면으로부터 cortical_thickness_mm 이내 영역을 피질골로 정의
-        cortical = bone_mask & (edt <= cortical_thickness_mm)
-        cancellous = bone_mask & (~cortical)
+        sub_bone = bone_mask[z0:z1, y0:y1, x0:x1]
+        sub_edt = scipy.ndimage.distance_transform_edt(sub_bone, sampling=sampling)
+
+        sub_cortical = sub_bone & (sub_edt <= cortical_thickness_mm)
+        sub_cancellous = sub_bone & (~sub_cortical)
+
+        cortical = np.zeros_like(bone_mask, dtype=bool)
+        cancellous = np.zeros_like(bone_mask, dtype=bool)
+        cortical[z0:z1, y0:y1, x0:x1] = sub_cortical
+        cancellous[z0:z1, y0:y1, x0:x1] = sub_cancellous
 
     elif method == "threshold":
         # 뼈 내부에서 고밀도(HU >= cortical_hu) 부위를 피질골 후보로 지정
