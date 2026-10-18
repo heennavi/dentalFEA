@@ -138,9 +138,9 @@ class TestUserInfoAndDrawing(unittest.TestCase):
 
         # 테두리 갱신 확인
         panel._update_tool_buttons_border()
-        self.assertIn("border: 2px solid #2196f3", panel.btn_measure.styleSheet())
-        self.assertIn("border: 2px solid #2196f3", panel.btn_annotation.styleSheet())
-        self.assertIn("border: 2px solid #2196f3", panel.btn_draw.styleSheet())
+        self.assertIn("border: 1px solid #ffffff", panel.btn_measure.styleSheet())
+        self.assertIn("border: 1px solid #ffffff", panel.btn_annotation.styleSheet())
+        self.assertIn("border: 1px solid #ffffff", panel.btn_draw.styleSheet())
 
         # 임시 JSON 파일 저장
         saved_dir = os.path.join(project_root, "saved")
@@ -163,9 +163,9 @@ class TestUserInfoAndDrawing(unittest.TestCase):
         main_win2.mpr_container.set_user_info_data(loaded_data)
 
         panel2 = main_win2.mpr_container.axial_panel
-        self.assertIn("border: 2px solid #2196f3", panel2.btn_measure.styleSheet())
-        self.assertIn("border: 2px solid #2196f3", panel2.btn_annotation.styleSheet())
-        self.assertIn("border: 2px solid #2196f3", panel2.btn_draw.styleSheet())
+        self.assertIn("border: 1px solid #ffffff", panel2.btn_measure.styleSheet())
+        self.assertIn("border: 1px solid #ffffff", panel2.btn_annotation.styleSheet())
+        self.assertIn("border: 1px solid #ffffff", panel2.btn_draw.styleSheet())
 
         self.assertIn("치과 임플란트", panel2._annotation_dialog.editor.toPlainText())
         self.assertEqual(len(panel2._draw_dialog.shapes), 1)

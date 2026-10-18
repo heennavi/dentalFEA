@@ -1,0 +1,15 @@
+{
+  "id": "impl_d45_l85_flat_t4_sq",
+  "name": "Square Thread Ø4.5 x 8.5mm (4° Fin)",
+  "diameter_mm": 4.5,
+  "length_mm": 8.5,
+  "taper_deg": 4.0,
+  "top_type": "flat",
+  "thread_type": "square",
+  "micro_threads": false,
+  "pitch_mm": 0.6,
+  "depth_mm": 0.3,
+  "is_custom": false,
+  "created_at": "기본 제공",
+  "file_name": "impl_d45_l85_flat_t4_sq.vtp"
+}

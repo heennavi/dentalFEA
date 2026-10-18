@@ -35,11 +35,7 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     },
     "volume_3d": {
         "shading": True,
-        "opacity": 1.0,
-        "show_axial_plane": False,
-        "show_coronal_plane": False,
-        "show_sagittal_plane": False,
-        "preset_index": 0
+        "opacity": 1.0
     },
     "window_level": {
         "window": 1500.0,

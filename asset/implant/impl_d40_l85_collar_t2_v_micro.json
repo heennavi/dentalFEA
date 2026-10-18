@@ -1,0 +1,15 @@
+{
+  "id": "impl_d40_l85_collar_t2_v_micro",
+  "name": "Collar Regular Ø4.0 x 8.5mm (2° Micro)",
+  "diameter_mm": 4.0,
+  "length_mm": 8.5,
+  "taper_deg": 2.0,
+  "top_type": "collar",
+  "thread_type": "triangular",
+  "micro_threads": true,
+  "pitch_mm": 0.6,
+  "depth_mm": 0.3,
+  "is_custom": false,
+  "created_at": "기본 제공",
+  "file_name": "impl_d40_l85_collar_t2_v_micro.vtp"
+}

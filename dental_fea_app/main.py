@@ -32,6 +32,12 @@ try:
 except Exception:
     pass
 
+# Linux 환경에서 fcitx5 데몬 실행 시 PySide6 내장 IBus 플러그인을 통해 한글 IME 및 한/영 전환 연동
+if sys.platform.startswith("linux"):
+    im_mod = os.environ.get("QT_IM_MODULE", "")
+    if im_mod in ("fcitx", "fcitx5") or not im_mod:
+        os.environ["QT_IM_MODULE"] = "ibus"
+
 from dental_fea_app.config import DARK_THEME_QSS
 from dental_fea_app.ui.main_window import MainWindow
 from dental_fea_app.imaging.dicom_reader import DicomReader

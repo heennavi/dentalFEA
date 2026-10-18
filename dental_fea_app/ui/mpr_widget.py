@@ -72,6 +72,7 @@ class MPRWidget(QWidget):
         self.image_slice.SetMapper(self.reslice_mapper)
         self.image_slice.SetProperty(self.image_property)
         self.image_slice.SetVisibility(False)
+        self.image_slice.PickableOff()
         self.renderer.AddViewProp(self.image_slice)
 
         # 십자선 생성 (고정 십자선: 회색, 호버 십자선: 검은색)
@@ -127,6 +128,11 @@ class MPRWidget(QWidget):
         # 2D 임플란트 단면 윤곽선(Cutter) 파이프라인 초기화
         self._init_implant_contour()
 
+        # 2D 인터랙티브 Transform 기즈모 초기화 (Axial/Coronal/Sagittal)
+        self.view_name = "axial" if axis == AXIS_AXIAL else ("coronal" if axis == AXIS_CORONAL else "sagittal")
+        from dental_fea_app.placement.implant_2d_gizmo import Implant2DTransformGizmo
+        self.implant_gizmo_2d = Implant2DTransformGizmo(self.view_name, self.renderer, self.state_mgr.implant_placement_mgr)
+
         # 2D 드로잉 및 계측 오버레이 초기화
         self._init_drawing_and_measurement_actors()
 
@@ -135,6 +141,15 @@ class MPRWidget(QWidget):
         self._implant_render_timer.setSingleShot(True)
         self._implant_render_timer.setInterval(30)
         self._implant_render_timer.timeout.connect(self._do_implant_render)
+
+        # 창 크기 변경 스로틀 타이머 (30ms 디바운스)
+        self._resize_timer = QTimer(self)
+        self._resize_timer.setSingleShot(True)
+        self._resize_timer.setInterval(30)
+        self._resize_timer.timeout.connect(self._on_resize_timeout)
+
+        # 전역 렌더링 요청 신호 연결
+        self.state_mgr.render_all_requested.connect(self.render)
 
         # 이벤트 필터
         self.vtkWidget.installEventFilter(self)
@@ -274,6 +289,7 @@ class MPRWidget(QWidget):
         self.mask_image_slice.SetMapper(self.mask_reslice_mapper)
         self.mask_image_slice.SetProperty(self.mask_image_property)
         self.mask_image_slice.SetVisibility(False)
+        self.mask_image_slice.PickableOff()
 
         self.renderer.AddViewProp(self.mask_image_slice)
 
@@ -597,6 +613,14 @@ class MPRWidget(QWidget):
         self._save_transform_settings()
         self._apply_transforms()
 
+    def reset_view_transforms(self):
+        """회전 및 대칭(flip)을 원래 로드 시의 초기 상태(0도, flip 없음)로 되돌리고 뷰에 즉시 반영"""
+        self._rotation_angle = 0
+        self._flip_h = False
+        self._flip_v = False
+        self._save_transform_settings()
+        self._apply_transforms()
+
     def flip_vertical(self):
         """상하 대칭 토글 (독립적 동작)"""
         self._flip_v = not self._flip_v
@@ -716,6 +740,20 @@ class MPRWidget(QWidget):
         self.camera.SetClippingRange(dist * 0.1, dist * 3.0)
         self._update_overlays()
         self._update_implant_contour()
+        if hasattr(self, "implant_gizmo_2d") and self.implant_gizmo_2d.is_attached:
+            self.implant_gizmo_2d.update_geometry((x, y, z))
+
+    def sync_implant_gizmo(self):
+        """선택된 임플란트에 맞춰 2D 기즈모를 연결하거나 분리합니다."""
+        if not hasattr(self, "implant_gizmo_2d"):
+            return
+        selected_imp = self.state_mgr.implant_placement_mgr.get_selected_implant()
+        if selected_imp and selected_imp.is_visible and self.state_mgr.implant_placement_mgr.is_visible_all:
+            self.implant_gizmo_2d.attach_implant(selected_imp, self.state_mgr.current_coords)
+            self.implant_gizmo_2d.update_geometry(self.state_mgr.current_coords)
+        else:
+            self.implant_gizmo_2d.detach()
+        self.render()
 
     def _update_hover_crosshair(self, wx: float, wy: float, wz: float):
         """마우스 이동에 따른 실시간 호버 십자선 (검은색) 업데이트"""
@@ -798,6 +836,10 @@ class MPRWidget(QWidget):
     def resizeEvent(self, event):
         super().resizeEvent(event)
         if self.state_mgr.vtk_image is not None:
+            self._resize_timer.start()
+
+    def _on_resize_timeout(self):
+        if self.state_mgr.vtk_image is not None and self.isVisible():
             self.render()
 
     # --- 마우스 및 이벤트 필터 ---
@@ -1202,6 +1244,46 @@ class MPRWidget(QWidget):
 
         return best_idx if min_dist <= threshold_mm else -1
 
+    def _pick_measure_at_world(self, w_pt: Tuple[float, float, float]) -> int:
+        """클릭된 월드 좌표에서 가장 가까운 현재 슬라이스의 계측 항목 인덱스 반환 (없으면 -1)"""
+        if not self.measure_dialog or not getattr(self.measure_dialog, "measurements", []):
+            return -1
+
+        cur_slice = self._get_current_slice_idx()
+        if self.axis == AXIS_AXIAL:
+            def to_uv(p): return (p[0], p[1])
+        elif self.axis == AXIS_CORONAL:
+            def to_uv(p): return (p[0], p[2])
+        else:
+            def to_uv(p): return (p[1], p[2])
+
+        p_uv = to_uv(w_pt)
+        min_dist = float("inf")
+        best_idx = -1
+        threshold_mm = 6.0
+
+        for idx, m in enumerate(self.measure_dialog.measurements):
+            if m.get("view_name") != self.axis_name or m.get("slice_idx") != cur_slice:
+                continue
+            mtype = m.get("type", "length")
+            w_pts = m.get("world_pts", [])
+            if not w_pts:
+                continue
+
+            dist = float("inf")
+            if mtype == "length" and len(w_pts) >= 2:
+                dist = self._point_to_segment_dist(p_uv, to_uv(w_pts[0]), to_uv(w_pts[1]))
+            elif mtype == "angle" and len(w_pts) >= 3:
+                d1 = self._point_to_segment_dist(p_uv, to_uv(w_pts[0]), to_uv(w_pts[1]))
+                d2 = self._point_to_segment_dist(p_uv, to_uv(w_pts[2]), to_uv(w_pts[1]))
+                dist = min(d1, d2)
+
+            if dist < min_dist:
+                min_dist = dist
+                best_idx = idx
+
+        return best_idx if min_dist <= threshold_mm else -1
+
     def _update_overlays(self):
         """현재 슬라이스 인덱스에 맞춰 도형 및 계측 액터 가시성 필터링 및 렌더링"""
         cur_slice = self._get_current_slice_idx()
@@ -1330,9 +1412,11 @@ class MPRWidget(QWidget):
                 style = self.draw_dialog.get_current_style() if self.draw_dialog else {}
                 stype = style.get("shape_type", "line")
 
+                # 기존 도형 클릭 여부 우선 검사
+                matched = self._pick_shape_at_world(w_pt)
+
                 if self.interaction_mode == "draw_select" or stype == "select":
                     # 선택 취소 모드: 화면에서 그린 도형 클릭 시 선택(하이라이트)
-                    matched = self._pick_shape_at_world(w_pt)
                     if self.draw_dialog:
                         if matched >= 0:
                             self.draw_dialog.table.selectRow(matched)
@@ -1340,6 +1424,11 @@ class MPRWidget(QWidget):
                         else:
                             self.draw_dialog.table.clearSelection()
                             self.set_selected_shape(-1)
+                elif matched >= 0:
+                    # 그리기 모드라도 기존 도형을 클릭한 경우 해당 도형 선택
+                    if self.draw_dialog:
+                        self.draw_dialog.table.selectRow(matched)
+                    self.set_selected_shape(matched)
                 elif stype == "freeform":
                     # 프리폼 그리기 시작
                     self.draw_start_pt = w_pt
@@ -1380,7 +1469,66 @@ class MPRWidget(QWidget):
                     self.render()
 
             else:
-                # 일반 모드: 기준 십자선 이동 및 전체 동조
+                # 일반 모드: 2D 임플란트 기즈모 조작 및 선택 체크
+                screen_x = self._last_mouse_pos.x()
+                screen_y = self.vtkWidget.height() - self._last_mouse_pos.y()
+
+                # 1) 기즈모 핸들 조작 체크
+                if hasattr(self, "implant_gizmo_2d") and self.implant_gizmo_2d.is_attached:
+                    handle = self.implant_gizmo_2d.find_handle_by_screen_pos(screen_x, screen_y)
+                    if handle and self.implant_gizmo_2d.start_drag(handle, screen_x, screen_y):
+                        self.render()
+                        return
+
+                # 2) 임플란트 단면 피킹(선택) 체크
+                hit_imp = None
+                picker = vtk.vtkPropPicker()
+                if picker.Pick(screen_x, screen_y, 0, self.renderer):
+                    prop = picker.GetViewProp()
+                    hit_imp = self.state_mgr.implant_placement_mgr.find_implant_by_actor(prop)
+
+                if not hit_imp:
+                    hit_imp = self.state_mgr.implant_placement_mgr.find_implant_by_slice_pos(self.view_name, w_pt)
+
+                if not hit_imp:
+                    hit_imp = self.state_mgr.implant_placement_mgr.find_implant_by_screen_ray(self.renderer, screen_x, screen_y)
+
+                if hit_imp:
+                    self.state_mgr.implant_placement_mgr.select_implant(hit_imp.id, multi_select=False)
+                    return
+
+                # 3) 화면에서 그린 도형 피킹 체크
+                matched_shape = self._pick_shape_at_world(w_pt)
+                if matched_shape >= 0:
+                    if self.draw_dialog:
+                        self.draw_dialog.table.selectRow(matched_shape)
+                    self.set_selected_shape(matched_shape)
+                    return
+
+                # 4) 화면에서 계측 항목 피킹 체크
+                matched_measure = self._pick_measure_at_world(w_pt)
+                if matched_measure >= 0:
+                    if self.measure_dialog:
+                        self.measure_dialog.table.selectRow(matched_measure)
+                    self.set_selected_measurement(matched_measure)
+                    return
+
+                # 5) 빈 영역 클릭 시: 선택 해제 및 십자선 이동
+                if hasattr(self, "implant_gizmo_2d") and self.implant_gizmo_2d.is_attached:
+                    self.state_mgr.implant_placement_mgr.clear_selection()
+
+                if getattr(self, "selected_measure_idx", -1) != -1:
+                    self.selected_measure_idx = -1
+                    if self.measure_dialog:
+                        self.measure_dialog.clear_selection()
+                    self._update_overlays()
+
+                if getattr(self, "selected_shape_idx", -1) != -1:
+                    self.selected_shape_idx = -1
+                    if self.draw_dialog:
+                        self.draw_dialog.clear_selection()
+                    self._update_overlays()
+
                 self.state_mgr.set_coordinates(w_pt[0], w_pt[1], w_pt[2])
 
         elif event.button() == Qt.MouseButton.MiddleButton:
@@ -1398,6 +1546,18 @@ class MPRWidget(QWidget):
             self._pan_camera(delta.x(), delta.y())
 
         elif self._left_pressed:
+            # 2D 기즈모 드래그 중인 경우 우선 처리
+            if hasattr(self, "implant_gizmo_2d") and self.implant_gizmo_2d.is_dragging:
+                screen_x = pos.x()
+                screen_y = self.vtkWidget.height() - pos.y()
+                if self.implant_gizmo_2d.update_drag(screen_x, screen_y):
+                    if hasattr(self, "parent_panel") and hasattr(self.parent_panel, "container") and self.parent_panel.container:
+                        self.parent_panel.container.render_all()
+                    else:
+                        self.render()
+                self._last_mouse_pos = pos
+                return
+
             if self._is_roi_setting_mode and self._roi_rect_start and w_pt:
                 self._draw_roi_rect(self._roi_rect_start, w_pt)
 
@@ -1479,6 +1639,14 @@ class MPRWidget(QWidget):
                 self.render()
 
             elif w_pt and not self._is_roi_setting_mode and self.interaction_mode == "normal":
+                # 2D 기즈모 핸들 호버 하이라이트 체크
+                if hasattr(self, "implant_gizmo_2d") and self.implant_gizmo_2d.is_attached:
+                    screen_x = pos.x()
+                    screen_y = self.vtkWidget.height() - pos.y()
+                    handle = self.implant_gizmo_2d.find_handle_by_screen_pos(screen_x, screen_y)
+                    if self.implant_gizmo_2d.highlight_handle(handle):
+                        self.render()
+
                 # 마우스 이동(Hover): 검은색 실선 십자선 실시간 표시
                 self._update_hover_crosshair(w_pt[0], w_pt[1], w_pt[2])
 
@@ -1487,6 +1655,15 @@ class MPRWidget(QWidget):
     def _handle_mouse_release(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
             self._left_pressed = False
+            # 2D 기즈모 드래그 종료 처리
+            if hasattr(self, "implant_gizmo_2d") and self.implant_gizmo_2d.is_dragging:
+                self.implant_gizmo_2d.end_drag()
+                if hasattr(self, "parent_panel") and hasattr(self.parent_panel, "container") and self.parent_panel.container:
+                    self.parent_panel.container.render_all()
+                else:
+                    self.render()
+                return
+
             w_pt = self._screen_to_world(event.position().toPoint())
 
             if self._is_roi_setting_mode and self._roi_rect_start and w_pt:
@@ -1530,6 +1707,10 @@ class MPRWidget(QWidget):
                         })
 
                 self.draw_start_pt = None
+                if self.draw_dialog and self.draw_dialog.shapes:
+                    new_idx = len(self.draw_dialog.shapes) - 1
+                    self.selected_shape_idx = new_idx
+                    self.draw_dialog.table.selectRow(new_idx)
                 self.temp_actor.SetVisibility(False)
                 self._update_overlays()
                 self.render()
@@ -1547,6 +1728,10 @@ class MPRWidget(QWidget):
                             "world_pts": [self.measure_start_pt, w_pt]
                         })
                 self.measure_start_pt = None
+                if self.measure_dialog and self.measure_dialog.measurements:
+                    new_idx = len(self.measure_dialog.measurements) - 1
+                    self.selected_measure_idx = new_idx
+                    self.measure_dialog.table.selectRow(new_idx)
                 self.temp_actor.SetVisibility(False)
                 self.temp_text_actor.SetVisibility(False)
                 self._update_overlays()

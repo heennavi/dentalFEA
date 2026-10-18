@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (
     QLabel, QSlider, QPushButton, QFrame, QGroupBox,
     QToolButton, QSplitter
 )
-from PySide6.QtCore import Qt, QSize
+from PySide6.QtCore import Qt, QSize, Signal
 
 from dental_fea_app.config import (
     AXIS_AXIAL, AXIS_CORONAL, AXIS_SAGITTAL
@@ -75,14 +75,24 @@ class ViewPanel(QWidget):
                 border-color: #61afef;
             }
             QToolButton:checked {
-                background-color: #1e3a5f;
-                border-color: #61afef;
+                background-color: #383842;
+                border: 1px solid #ffffff;
             }
         """
 
         # MPR 위젯 먼저 생성
         self.mpr_widget = MPRWidget(axis, state_mgr, self)
         icon_size = QSize(18, 18)
+
+        # 0) 회전/대칭 초기화 버튼 (맨 왼쪽)
+        self.btn_reset_view = QToolButton(header)
+        self.btn_reset_view.setIcon(IconFactory.reset_view(22))
+        self.btn_reset_view.setIconSize(icon_size)
+        self.btn_reset_view.setFixedSize(26, 24)
+        self.btn_reset_view.setToolTip("뷰 초기화 (회전/대칭 리셋)")
+        self.btn_reset_view.setStyleSheet(btn_qss)
+        self.btn_reset_view.clicked.connect(self.mpr_widget.reset_view_transforms)
+        header_layout.addWidget(self.btn_reset_view)
 
         # 1) 90도 시계방향 회전
         self.btn_rot_cw = QToolButton(header)
@@ -198,6 +208,13 @@ class ViewPanel(QWidget):
         # 상태 관리자 신호 연결
         self.state_mgr.coordinates_changed.connect(self._update_info)
         self.state_mgr.volume_loaded.connect(self._on_volume_loaded)
+        self.set_tools_enabled(self.state_mgr.vtk_image is not None)
+
+    def set_tools_enabled(self, enabled: bool):
+        for btn in [self.btn_reset_view, self.btn_rot_cw, self.btn_rot_ccw, self.btn_flip_h, self.btn_flip_v,
+                    self.btn_ruler, self.btn_crosshair, self.btn_measure, self.btn_annotation, self.btn_draw]:
+            btn.setEnabled(enabled)
+        self.slider.setEnabled(enabled)
 
     def _on_toggle_crosshair(self, checked: bool):
         self.mpr_widget.set_crosshair_visible(checked)
@@ -206,6 +223,7 @@ class ViewPanel(QWidget):
         self.mpr_widget.set_ruler_visible(checked)
 
     def _on_volume_loaded(self, vtk_image):
+        self.set_tools_enabled(vtk_image is not None)
         dims = self.state_mgr.dimensions
         max_idx = max(0, dims[self.axis] - 1)
         self.slider.setRange(0, max_idx)
@@ -355,13 +373,13 @@ class ViewPanel(QWidget):
                 btn.setStyleSheet("""
                     QToolButton {
                         background-color: #2c2c32;
-                        border: 2px solid #2196f3;
+                        border: 1px solid #ffffff;
                         border-radius: 3px;
                         padding: 2px;
                     }
                     QToolButton:hover {
                         background-color: #3e3e48;
-                        border-color: #64b5f6;
+                        border-color: #ffffff;
                     }
                 """)
             else:
@@ -395,6 +413,7 @@ class MPRContainer(QWidget):
     - 크기 상태 저장 및 복원 (SettingsManager 연동)
     - 공유 다이얼로그(계측 도구, 주석, 그리기 도구) 통합 관리
     """
+    user_info_modified = Signal()
 
     def __init__(self, state_manager: StateManager, on_open_3d_callback, parent: Optional[QWidget] = None):
         super().__init__(parent)
@@ -426,6 +445,15 @@ class MPRContainer(QWidget):
         for p in self.panels:
             p.mpr_widget.measure_dialog = self.measure_dialog
             p.mpr_widget.draw_dialog = self.draw_dialog
+
+        # 2D 렌더러 등록 (임플란트 다중 단면 및 기즈모 연동)
+        self.state_mgr.implant_placement_mgr.set_renderers_2d({
+            "axial": self.axial_panel.mpr_widget.renderer,
+            "coronal": self.coronal_panel.mpr_widget.renderer,
+            "sagittal": self.sagittal_panel.mpr_widget.renderer,
+        })
+        self.state_mgr.implant_selected.connect(self._on_implant_selected)
+        self.state_mgr.implant_transformed.connect(self._on_implant_transformed)
 
         # 3. 다이얼로그 신호 연결
         self._init_shared_dialog_signals()
@@ -500,9 +528,12 @@ class MPRContainer(QWidget):
         self.measure_dialog.all_cleared.connect(self._on_measure_updated)
         self.measure_dialog.visibility_toggled.connect(self._on_measure_visibility_toggled)
         self.measure_dialog.navigate_to_item.connect(self._on_navigate_to_item)
+        self.measure_dialog.measurements_updated.connect(self._on_measure_updated)
+        self.measure_dialog.measurements_updated.connect(self.user_info_modified.emit)
 
         # 주석 다이얼로그
         self.annotation_dialog.saved.connect(lambda _: self._update_all_borders())
+        self.annotation_dialog.saved.connect(lambda _: self.user_info_modified.emit())
 
         # 그리기 다이얼로그
         self.draw_dialog.active_toggled.connect(self._on_draw_active_toggled)
@@ -512,6 +543,18 @@ class MPRContainer(QWidget):
         self.draw_dialog.all_cleared.connect(self._on_draw_updated)
         self.draw_dialog.visibility_toggled.connect(self._on_draw_visibility_toggled)
         self.draw_dialog.navigate_to_item.connect(self._on_navigate_to_item)
+        self.draw_dialog.shapes_updated.connect(self._on_draw_updated)
+        self.draw_dialog.shapes_updated.connect(self.user_info_modified.emit)
+
+        # 임플란트 변경 시 사용자 정보 변경 알림
+        if hasattr(self.state_mgr, "implant_placed"):
+            self.state_mgr.implant_placed.connect(lambda _: self.user_info_modified.emit())
+        if hasattr(self.state_mgr, "implant_deleted"):
+            self.state_mgr.implant_deleted.connect(lambda _: self.user_info_modified.emit())
+        if hasattr(self.state_mgr, "implant_transformed"):
+            self.state_mgr.implant_transformed.connect(lambda *_: self.user_info_modified.emit())
+        if hasattr(self.state_mgr, "implant_model_changed"):
+            self.state_mgr.implant_model_changed.connect(lambda *_: self.user_info_modified.emit())
 
     def _on_volume_loaded_for_dialogs(self, vtk_image):
         self.annotation_dialog.update_dicom_meta(self.state_mgr.metadata)
@@ -659,11 +702,12 @@ class MPRContainer(QWidget):
         self.sagittal_panel.mpr_widget.reset_camera()
 
     def get_user_info_data(self) -> dict:
-        """저장을 위한 3종 데이터(주석, 계측, 그린 도형) 수집"""
+        """저장을 위한 4종 데이터(주석, 계측, 그린 도형, 식립 임플란트 및 보철) 수집"""
         res = {
             "annotations": {},
             "measurements": [],
-            "shapes": []
+            "shapes": [],
+            "implants": []
         }
         # 첫 번째 패널 또는 등록된 패널들의 다이얼로그로부터 데이터 수집
         panels = [self.axial_panel, self.coronal_panel, self.sagittal_panel]
@@ -685,32 +729,38 @@ class MPRContainer(QWidget):
                 if s_list:
                     res["shapes"] = s_list
                     break
+        if hasattr(self.state_mgr, "implant_placement_mgr") and self.state_mgr.implant_placement_mgr:
+            res["implants"] = self.state_mgr.implant_placement_mgr.to_dict()
         return res
 
     def set_user_info_data(self, data: dict):
-        """불러온 사용자 정보 데이터를 다이얼로그 및 뷰에 적용하고 테두리 갱신"""
-        panels = [self.axial_panel, self.coronal_panel, self.sagittal_panel]
+        """불러온 사용자 정보 데이터를 다이얼로그 및 뷰에 적용하고 테두리 갱신 (1회 일괄 적용 최적화)"""
         annot_data = data.get("annotations", {})
         measure_data = data.get("measurements", [])
         shapes_data = data.get("shapes", [])
+        implants_data = data.get("implants", [])
 
-        for p in panels:
-            if not hasattr(p, "_annotation_dialog") or p._annotation_dialog is None:
-                p._open_annotation_dialog()
-                p._annotation_dialog.hide()
-            p._annotation_dialog.from_dict(annot_data)
+        # 로드 중에는 user_info_modified 시그널 방출 방지
+        prev_blocked = self.signalsBlocked()
+        self.blockSignals(True)
+        try:
+            # 공용 다이얼로그에 데이터 1회 일괄 적용
+            self.annotation_dialog.from_dict(annot_data)
+            self.measure_dialog.from_dict(measure_data)
+            self.draw_dialog.from_dict(shapes_data)
 
-            if not hasattr(p, "_measure_dialog") or p._measure_dialog is None:
-                p._open_measure_dialog()
-                p._measure_dialog.hide()
-            p._measure_dialog.from_dict(measure_data)
+            # 각 패널의 mpr_widget에 다이얼로그 참조 연결 보장
+            for p in self.panels:
+                p.mpr_widget.measure_dialog = self.measure_dialog
+                p.mpr_widget.draw_dialog = self.draw_dialog
 
-            if not hasattr(p, "_draw_dialog") or p._draw_dialog is None:
-                p._open_draw_dialog()
-                p._draw_dialog.hide()
-            p._draw_dialog.from_dict(shapes_data)
+            if implants_data and hasattr(self.state_mgr, "implant_placement_mgr") and self.state_mgr.implant_placement_mgr:
+                self.state_mgr.implant_placement_mgr.from_dict(implants_data)
 
-            p._update_tool_buttons_border()
+            self._update_all_borders()
+            self.render_all()
+        finally:
+            self.blockSignals(prev_blocked)
 
     def _create_control_quadrant(self) -> QWidget:
         """
@@ -721,6 +771,27 @@ class MPRContainer(QWidget):
         container.setStyleSheet("background-color: #121214; border: 1px solid #282830; border-radius: 4px;")
         container.setMinimumSize(100, 100)
         return container
+
+    def render_all(self):
+        """3개 2D MPR 위젯 렌더링"""
+        for p in self.panels:
+            p.mpr_widget.render()
+
+    def sync_all_implant_gizmos(self):
+        """선택된 임플란트에 맞춰 3개 2D 뷰 기즈모 동기화"""
+        for p in self.panels:
+            p.mpr_widget.sync_implant_gizmo()
+
+    def _on_implant_selected(self, implant_id: str):
+        """임플란트 선택 변경 시 2D 기즈모 및 뷰 동기화"""
+        self.sync_all_implant_gizmos()
+        self.render_all()
+
+    def _on_implant_transformed(self, implant_id: str):
+        """임플란트 변환(이동/회전) 시 2D 단면 및 기즈모 동기화"""
+        self.state_mgr.implant_placement_mgr.update_2d_slice_contours(self.state_mgr.current_coords)
+        self.sync_all_implant_gizmos()
+        self.render_all()
 
 
 

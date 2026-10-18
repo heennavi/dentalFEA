@@ -1,0 +1,15 @@
+{
+  "id": "impl_d50_l60_flat_t4_sq",
+  "name": "Wide Tapered Ø5.0 x 6.0mm (4° Square)",
+  "diameter_mm": 5.0,
+  "length_mm": 6.0,
+  "taper_deg": 4.0,
+  "top_type": "flat",
+  "thread_type": "square",
+  "micro_threads": false,
+  "pitch_mm": 0.6,
+  "depth_mm": 0.3,
+  "is_custom": false,
+  "created_at": "기본 제공",
+  "file_name": "impl_d50_l60_flat_t4_sq.vtp"
+}

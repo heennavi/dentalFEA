@@ -1,0 +1,15 @@
+{
+  "id": "impl_d40_l100_flat_t0_sq",
+  "name": "Straight Square Ø4.0 x 10.0mm (Square-Fin)",
+  "diameter_mm": 4.0,
+  "length_mm": 10.0,
+  "taper_deg": 0.0,
+  "top_type": "flat",
+  "thread_type": "square",
+  "micro_threads": false,
+  "pitch_mm": 0.6,
+  "depth_mm": 0.3,
+  "is_custom": false,
+  "created_at": "기본 제공",
+  "file_name": "impl_d40_l100_flat_t0_sq.vtp"
+}

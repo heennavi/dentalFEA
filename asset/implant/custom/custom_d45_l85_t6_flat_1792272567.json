@@ -1,0 +1,15 @@
+{
+  "id": "custom_d45_l85_t6_flat_1792272567",
+  "name": "Custom Ø4.5 x 8.5mm (6° Flat)",
+  "diameter_mm": 4.5,
+  "length_mm": 8.5,
+  "taper_deg": 6.0,
+  "top_type": "flat",
+  "thread_type": "triangular",
+  "micro_threads": true,
+  "pitch_mm": 0.6,
+  "depth_mm": 0.3,
+  "is_custom": true,
+  "created_at": "2026-10-18 06:29:27",
+  "file_name": "custom_d45_l85_t6_flat_1792272567.vtp"
+}

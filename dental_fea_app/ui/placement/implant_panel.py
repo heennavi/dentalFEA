@@ -17,15 +17,22 @@ import numpy as np
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QPushButton, QLabel, QDoubleSpinBox, QComboBox,
-    QGroupBox, QFileDialog, QMessageBox, QFrame, QRadioButton, QButtonGroup
+    QGroupBox, QFileDialog, QMessageBox, QFrame, QRadioButton, QButtonGroup,
+    QSizePolicy
 )
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, QTimer, QSize
 
 from dental_fea_app.core.state_manager import StateManager
 from dental_fea_app.placement.implant_manager import (
     ImplantModel,
     bone_overlap_ratio,
 )
+from dental_fea_app.placement.implant_generator import (
+    ImplantSpec,
+    ImplantLibraryManager,
+)
+from dental_fea_app.ui.icons import IconFactory
+from dental_fea_app.ui.placement.implant_simulation_dialog import ImplantSimulationDialog
 
 
 class ImplantPanel(QWidget):
@@ -55,36 +62,81 @@ class ImplantPanel(QWidget):
         self.state_mgr.implant_model_changed.connect(self._on_implant_model_changed)
         self.state_mgr.implant_pose_changed.connect(self._on_implant_pose_changed)
         self.state_mgr.segmentation_result_changed.connect(self._on_segmentation_changed)
+        if hasattr(self.state_mgr, "implant_selected"):
+            self.state_mgr.implant_selected.connect(self._on_implant_selected)
 
     def _init_ui(self):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(6, 6, 6, 6)
         layout.setSpacing(6)
 
-        # 1. STL 파일 불러오기 그룹
-        stl_group = QGroupBox("임플란트 STL 파일", self)
+        # 0. 최상단: 임플란트 및 보철 시뮬레이션 버튼 (Crosshair 버튼과 동일 텍스트 크기 및 패딩)
+        btn_sim_box = QHBoxLayout()
+        btn_sim_box.setContentsMargins(0, 0, 0, 0)
+        self.btn_sim_launch = QPushButton(" 임플란트 및 보철", self)
+        self.btn_sim_launch.setIcon(IconFactory.implant(size=14))
+        self.btn_sim_launch.setIconSize(QSize(14, 14))
+        self.btn_sim_launch.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+        self.btn_sim_launch.setToolTip("임플란트 식립 시뮬레이션 및 Abutment/보철물(Crown) 관리 창을 엽니다.")
+        self.btn_sim_launch.setStyleSheet("""
+            QPushButton {
+                background-color: #2c3848;
+                color: #61afef;
+                border: 1px solid #4d698e;
+                border-radius: 4px;
+                padding: 4px 8px;
+                font-weight: bold;
+                text-align: center;
+            }
+            QPushButton:hover {
+                background-color: #38485c;
+                border-color: #61afef;
+                color: #ffffff;
+            }
+            QPushButton:pressed {
+                background-color: #212c3a;
+            }
+        """)
+        self.btn_sim_launch.clicked.connect(self._open_simulation_dialog)
+        btn_sim_box.addWidget(self.btn_sim_launch)
+        btn_sim_box.addStretch()
+        layout.addLayout(btn_sim_box)
+
+        # 1. STL 파일 불러오기 및 라이브러리 사양 그룹
+        stl_group = QGroupBox("임플란트 모델 / 사양", self)
         stl_vbox = QVBoxLayout(stl_group)
         stl_vbox.setContentsMargins(6, 6, 6, 6)
         stl_vbox.setSpacing(4)
 
-        self.btn_load_stl = QPushButton("📂 STL 불러오기...", stl_group)
+        # 라이브러리 퀵 선택 콤보박스
+        quick_hbox = QHBoxLayout()
+        quick_hbox.addWidget(QLabel("규격:", stl_group))
+        self.combo_library = QComboBox(stl_group)
+        self.combo_library.addItem("직접 STL 불러오기 또는 선택")
+        self._load_library_presets()
+        self.combo_library.currentIndexChanged.connect(self._on_library_combo_changed)
+        quick_hbox.addWidget(self.combo_library, 1)
+        stl_vbox.addLayout(quick_hbox)
+
+        self.btn_load_stl = QPushButton("📂 외부 STL 파일 불러오기...", stl_group)
         self.btn_load_stl.setStyleSheet("""
             QPushButton {
-                background-color: #2b3a4a;
-                color: #61afef;
-                border: 1px solid #45627d;
+                background-color: #21252b;
+                color: #abb2bf;
+                border: 1px solid #3c3c46;
                 border-radius: 4px;
-                padding: 5px;
-                font-weight: bold;
+                padding: 4px;
+                font-size: 11px;
             }
             QPushButton:hover {
-                background-color: #354a5f;
+                background-color: #2c313a;
+                color: #61afef;
             }
         """)
         self.btn_load_stl.clicked.connect(self._load_stl_dialog)
         stl_vbox.addWidget(self.btn_load_stl)
 
-        self.lbl_stl_name = QLabel("파일: (로드되지 않음)", stl_group)
+        self.lbl_stl_name = QLabel("모델: (로드되지 않음)", stl_group)
         self.lbl_stl_name.setStyleSheet("color: #aaaaaa; font-size: 11px;")
         self.lbl_stl_name.setWordWrap(True)
         stl_vbox.addWidget(self.lbl_stl_name)
@@ -95,49 +147,19 @@ class ImplantPanel(QWidget):
 
         layout.addWidget(stl_group)
 
-        # 2. 빠른 배치 및 식립축 그룹
-        place_group = QGroupBox("배치 및 식립축", self)
-        place_vbox = QVBoxLayout(place_group)
-        place_vbox.setContentsMargins(6, 6, 6, 6)
-        place_vbox.setSpacing(4)
-
-        self.btn_place_crosshair = QPushButton("🎯 현재 Crosshair에 배치", place_group)
-        self.btn_place_crosshair.setToolTip("현재 2D/3D 십자선 교차점 위치를 임플란트 Apex(식립끝)로 지정합니다.")
-        self.btn_place_crosshair.setStyleSheet("""
-            QPushButton {
-                background-color: #3e3e28;
-                color: #e5c07b;
-                border: 1px solid #7d7d45;
-                border-radius: 4px;
-                padding: 4px;
-                font-weight: bold;
-            }
-            QPushButton:hover {
-                background-color: #555535;
-            }
-        """)
+        # 2. 배치 및 식립축 그룹 제거 (사용자 요청에 따라 UI 레이아웃에서 제외)
+        # 하위 호환 및 테스트 유지를 위해 위젯 인스턴스만 보관
+        self.btn_place_crosshair = QPushButton("🎯 현재 Crosshair에 배치", self)
         self.btn_place_crosshair.clicked.connect(self._place_at_crosshair)
-        place_vbox.addWidget(self.btn_place_crosshair)
-
-        # 식립 방향 지정 (두 점 캡처)
-        dir_box = QHBoxLayout()
-        dir_box.setSpacing(4)
-        self.btn_capture_p1 = QPushButton("1) 시작점(Apex)", place_group)
-        self.btn_capture_p1.setToolTip("현재 십자선 위치를 식립 시작점(Apex)으로 등록")
+        self.btn_place_crosshair.hide()
+        self.btn_capture_p1 = QPushButton("1) 시작점(Apex)", self)
         self.btn_capture_p1.clicked.connect(self._capture_dir_p1)
-        dir_box.addWidget(self.btn_capture_p1)
-
-        self.btn_capture_p2 = QPushButton("2) 끝점(Top)", place_group)
-        self.btn_capture_p2.setToolTip("현재 십자선 위치를 식립 끝점(Top)으로 등록하여 축 설정")
+        self.btn_capture_p1.hide()
+        self.btn_capture_p2 = QPushButton("2) 끝점(Top)", self)
         self.btn_capture_p2.clicked.connect(self._capture_dir_p2)
-        dir_box.addWidget(self.btn_capture_p2)
-        place_vbox.addLayout(dir_box)
-
-        self.lbl_dir_status = QLabel("방향: Z축 수직 (기본값)", place_group)
-        self.lbl_dir_status.setStyleSheet("color: #888888; font-size: 10px;")
-        place_vbox.addWidget(self.lbl_dir_status)
-
-        layout.addWidget(place_group)
+        self.btn_capture_p2.hide()
+        self.lbl_dir_status = QLabel("방향: Z축 수직 (기본값)", self)
+        self.lbl_dir_status.hide()
 
         # 3. 위치 및 회전 미세조정 그룹
         adjust_group = QGroupBox("위치 및 회전 미세조정", self)
@@ -198,7 +220,9 @@ class ImplantPanel(QWidget):
         grid_rot.addWidget(self.spin_roll, 2, 1)
         adj_layout.addLayout(grid_rot)
 
-        layout.addWidget(adjust_group)
+        # 사용자 요청에 따라 '위치 및 회전 미세조정' 그룹 UI 레이아웃에서 삭제
+        # 테스트 및 하위 호환을 위해 객체 인스턴스는 유지하고 숨김 처리
+        adjust_group.hide()
 
         # 4. 뼈 겹침 비율 및 적합도 정보
         fit_group = QGroupBox("식립 적합도 (Bone Fit)", self)
@@ -254,6 +278,86 @@ class ImplantPanel(QWidget):
         self.spin_x.setSingleStep(step_val)
         self.spin_y.setSingleStep(step_val)
         self.spin_z.setSingleStep(step_val)
+
+    def _load_library_presets(self):
+        try:
+            self._library_specs = ImplantLibraryManager.list_all_implants()
+            for spec in self._library_specs:
+                self.combo_library.addItem(f"{spec.name} (Ø{spec.diameter_mm:.1f} x {spec.length_mm:.1f}mm)")
+        except Exception:
+            self._library_specs = []
+
+    def _on_library_combo_changed(self, index: int):
+        if index <= 0 or not hasattr(self, "_library_specs"):
+            return
+        spec_idx = index - 1
+        if 0 <= spec_idx < len(self._library_specs):
+            spec = self._library_specs[spec_idx]
+            self._apply_spec_to_model(spec, is_maxilla=False)
+
+    def _open_simulation_dialog(self):
+        if not hasattr(self, "_sim_dialog") or self._sim_dialog is None:
+            self._sim_dialog = ImplantSimulationDialog(self.state_mgr.implant_placement_mgr, self)
+            self._sim_dialog.placement_requested.connect(self._on_sim_placement_requested)
+        self._sim_dialog.show()
+        self._sim_dialog.raise_()
+        self._sim_dialog.activateWindow()
+
+    def _on_sim_placement_requested(self, spec: ImplantSpec, is_maxilla: bool):
+        sel_imp = self.state_mgr.implant_placement_mgr.get_selected_implant()
+        if sel_imp:
+            # 다중 식립 체계(implant_placement_mgr)와 단일 패널 UI 정보 동기화
+            file_name = getattr(sel_imp.spec, 'file_name', None)
+            fname = os.path.basename(file_name) if file_name else sel_imp.spec.name
+            self.lbl_stl_name.setText(f"모델: {fname}")
+            self.lbl_stl_dim.setText(f"치수: Ø {sel_imp.spec.diameter_mm:.1f} mm x L {sel_imp.spec.length_mm:.1f} mm")
+            self._block_spin_signals = True
+            try:
+                self.spin_x.setValue(sel_imp.position[0])
+                self.spin_y.setValue(sel_imp.position[1])
+                self.spin_z.setValue(sel_imp.position[2])
+                self.spin_yaw.setValue(sel_imp.orientation[0])
+                self.spin_pitch.setValue(sel_imp.orientation[1])
+                self.spin_roll.setValue(sel_imp.orientation[2])
+            finally:
+                self._block_spin_signals = False
+            # 중복 액터 생성을 막기 위해 set_implant_model()은 호출하지 않음
+
+    def _on_implant_selected(self, implant_id: str):
+        if not implant_id:
+            return
+        mgr = getattr(self.state_mgr, "implant_placement_mgr", None)
+        if mgr is None:
+            return
+        imp = mgr.get_implant(implant_id)
+        if imp and imp.spec:
+            file_name = getattr(imp.spec, 'file_name', None)
+            fname = os.path.basename(file_name) if file_name else getattr(imp.spec, 'name', f"{imp.spec.manufacturer} {imp.spec.model_name}")
+            self.lbl_stl_name.setText(f"모델: {fname}")
+            self.lbl_stl_dim.setText(f"치수: Ø {imp.spec.diameter_mm:.1f} mm x L {imp.spec.length_mm:.1f} mm")
+            self._block_spin_signals = True
+            try:
+                self.spin_x.setValue(imp.position[0])
+                self.spin_y.setValue(imp.position[1])
+                self.spin_z.setValue(imp.position[2])
+                self.spin_yaw.setValue(imp.orientation[0])
+                self.spin_pitch.setValue(imp.orientation[1])
+                self.spin_roll.setValue(imp.orientation[2])
+            finally:
+                self._block_spin_signals = False
+
+    def _apply_spec_to_model(self, spec: ImplantSpec, is_maxilla: bool = False):
+        poly = ImplantLibraryManager.load_implant_polydata(spec)
+        model = ImplantModel()
+        model.load_from_spec(spec, poly)
+
+        if is_maxilla:
+            # 상악 식립: 로컬 -Z(아래)가 아닌 +Z가 식립 방향이 되도록 회전 보정
+            model.rotate_about_axis(180.0, [1.0, 0.0, 0.0])
+
+        self.state_mgr.set_implant_model(model)
+        if self.state_mgr.vtk_image is not None:
+            self._place_at_crosshair()
 
     def _load_stl_dialog(self):
         file_path, _ = QFileDialog.getOpenFileName(
@@ -350,7 +454,7 @@ class ImplantPanel(QWidget):
             current_axis = [0.0, 0.0, 1.0]
 
         self.implant_model.place_at(point_world=[cx, cy, cz], axis_world=current_axis)
-        self.lbl_dir_status.setText(f"Apex: ({cx:.1f}, {cy:.1f}, {cz:.1f})")
+        self.lbl_dir_status.setText(f"Top: ({cx:.1f}, {cy:.1f}, {cz:.1f})")
 
     def _capture_dir_p1(self):
         cx, cy, cz = self.state_mgr.current_coords

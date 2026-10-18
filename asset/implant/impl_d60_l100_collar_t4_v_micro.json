@@ -1,0 +1,15 @@
+{
+  "id": "impl_d60_l100_collar_t4_v_micro",
+  "name": "Ultra-Wide Collar Ø6.0 x 10.0mm (4° Micro)",
+  "diameter_mm": 6.0,
+  "length_mm": 10.0,
+  "taper_deg": 4.0,
+  "top_type": "collar",
+  "thread_type": "triangular",
+  "micro_threads": true,
+  "pitch_mm": 0.6,
+  "depth_mm": 0.3,
+  "is_custom": false,
+  "created_at": "기본 제공",
+  "file_name": "impl_d60_l100_collar_t4_v_micro.vtp"
+}

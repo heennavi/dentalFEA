@@ -1,0 +1,15 @@
+{
+  "id": "custom_d50_l100_t5_flat_1790635214",
+  "name": "Custom Ø5.0 x 10.0mm (flat, Taper 5°)",
+  "diameter_mm": 5.0,
+  "length_mm": 10.0,
+  "taper_deg": 5.0,
+  "top_type": "flat",
+  "thread_type": "triangular",
+  "micro_threads": false,
+  "pitch_mm": 0.6,
+  "depth_mm": 0.3,
+  "is_custom": true,
+  "created_at": "2026-09-29 07:40:14",
+  "file_name": "custom_d50_l100_t5_flat_1790635214.vtp"
+}

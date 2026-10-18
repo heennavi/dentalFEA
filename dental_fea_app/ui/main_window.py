@@ -36,8 +36,15 @@ class MainWindow(QMainWindow):
         # 독립 3D 볼륨 뷰어 창 인스턴스
         self.volume_window: Optional[VolumeViewerWindow] = None
 
+        # 사용자 정보 변경 여부 추적 플래그
+        self._user_info_dirty = False
+
         # UI 컴포넌트 생성
         self._init_ui()
+
+        # 사용자 정보 변경 시그널 연결
+        self.mpr_container.user_info_modified.connect(self._mark_user_info_dirty)
+        self.state_mgr.volume_loaded.connect(self._on_volume_loaded_reset_dirty)
 
         # 창 위치 및 크기 복원
         self._restore_window_geometry()
@@ -47,6 +54,12 @@ class MainWindow(QMainWindow):
 
         # 메뉴바 및 상태표시줄 구성
         self._init_menu_and_status()
+
+    def _mark_user_info_dirty(self):
+        self._user_info_dirty = True
+
+    def _on_volume_loaded_reset_dirty(self, _):
+        self._user_info_dirty = False
 
     def _restore_window_geometry(self):
         geom = self.settings_mgr.get("main_window.geometry")
@@ -205,7 +218,14 @@ class MainWindow(QMainWindow):
         act_reset_cam.triggered.connect(self.mpr_container.reset_all_cameras)
         menu_view.addAction(act_reset_cam)
 
-        # 3. 도움말 메뉴
+        # 3. 도구(Tools) 메뉴
+        self.menu_tools = menubar.addMenu("도구(&T)")
+        act_preferences = QAction("환경설정(&P)...", self)
+        act_preferences.setShortcut("Ctrl+,")
+        act_preferences.triggered.connect(self._show_settings_dialog)
+        self.menu_tools.addAction(act_preferences)
+
+        # 4. 도움말 메뉴
         menu_help = menubar.addMenu("도움말(&H)")
 
         # [요청 반영] 현재 영상정보 메뉴 및 팝업
@@ -290,9 +310,21 @@ class MainWindow(QMainWindow):
             QApplication.restoreOverrideCursor()
 
     def _show_image_info(self):
-        """현재 영상 정보 상세 팝업 창 띄우기"""
-        dlg = ImageInfoDialog(self.state_mgr, self)
-        dlg.exec()
+        """현재 영상 정보 상세 팝업 창 띄우기 (비모달)"""
+        if not hasattr(self, "_image_info_dlg") or self._image_info_dlg is None:
+            self._image_info_dlg = ImageInfoDialog(self.state_mgr, self)
+        self._image_info_dlg.show()
+        self._image_info_dlg.raise_()
+        self._image_info_dlg.activateWindow()
+
+    def _show_settings_dialog(self):
+        """환경설정(초기설정, 파노라마, 임플란트 모델러 및 사양 라이브러리) 대화상자 열기 (비모달)"""
+        from dental_fea_app.ui.settings_dialog import SettingsDialog
+        if not hasattr(self, "_settings_dlg") or self._settings_dlg is None:
+            self._settings_dlg = SettingsDialog(self)
+        self._settings_dlg.show()
+        self._settings_dlg.raise_()
+        self._settings_dlg.activateWindow()
 
     def open_3d_viewer(self):
         """
@@ -343,7 +375,7 @@ class MainWindow(QMainWindow):
             "- VTK Smart/GPU Volume Ray Casting 기반 3D 볼륨 렌더링"
         )
 
-    def _save_user_info(self, default_path: Optional[str] = None):
+    def _save_user_info(self, default_path: Optional[str] = None, prompt_dialog: bool = True):
         """그리기, 계측, 주석 데이터를 saved/ 폴더에 JSON 파일로 저장"""
         base_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "saved")
         os.makedirs(base_dir, exist_ok=True)
@@ -359,12 +391,15 @@ class MainWindow(QMainWindow):
                 def_name = f"user_info_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
             default_path = os.path.join(base_dir, def_name)
 
-        filepath, _ = QFileDialog.getSaveFileName(
-            self, "사용자 정보 저장 (주석, 계측, 그리기)", default_path,
-            "JSON 파일 (*.json);;모든 파일 (*.*)"
-        )
-        if not filepath:
-            return False
+        if prompt_dialog:
+            filepath, _ = QFileDialog.getSaveFileName(
+                self, "사용자 정보 저장 (주석, 계측, 그리기)", default_path,
+                "JSON 파일 (*.json);;모든 파일 (*.*)"
+            )
+            if not filepath:
+                return False
+        else:
+            filepath = default_path
 
         try:
             data = self.mpr_container.get_user_info_data()
@@ -372,6 +407,7 @@ class MainWindow(QMainWindow):
             data["saved_at"] = str(QDateTime.currentDateTime().toString(Qt.DateFormat.ISODate))
             with open(filepath, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
+            self._user_info_dirty = False
             self.status_bar.showMessage(f"사용자 정보 저장 완료: {os.path.basename(filepath)}", 4000)
             return True
         except Exception as e:
@@ -398,6 +434,7 @@ class MainWindow(QMainWindow):
             with open(filepath, "r", encoding="utf-8") as f:
                 data = json.load(f)
             self.mpr_container.set_user_info_data(data)
+            self._user_info_dirty = False
             self.status_bar.showMessage(f"사용자 정보 로드 완료: {os.path.basename(filepath)}", 4000)
             return True
         except Exception as e:
@@ -432,10 +469,10 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event):
         """
         메인 윈도우 닫힐 때:
-        1. 작성된 사용자 정보(주석, 계측, 도형)가 있을 경우 저장 여부 확인 팝업
+        1. 새로운 변경사항이 있을 때만 저장 여부 확인 팝업 (저장 후 변경 없으면 바로 닫힘)
         2. 설정 저장 및 3D 독립 창 정리
         """
-        if self._has_user_info_content():
+        if self._user_info_dirty and self._has_user_info_content():
             reply = QMessageBox.question(
                 self, "사용자 정보 저장 확인",
                 "작성 중인 사용자 정보(주석, 계측, 그리기 도형)가 있습니다.\n종료하기 전에 파일로 저장하시겠습니까?",

@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QMessageBox, QApplication
 )
 from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QColor, QPalette
 
 
 class AnnotationDialog(QDialog):
@@ -26,7 +27,7 @@ class AnnotationDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("주석 작성")
         self.resize(560, 420)
-        self.setWindowFlags(self.windowFlags() | Qt.WindowType.WindowStaysOnTopHint)
+        self.setAttribute(Qt.WidgetAttribute.WA_InputMethodEnabled, True)
 
         self.dicom_meta = dicom_meta or {}
         self.initial_text = initial_text
@@ -69,6 +70,12 @@ class AnnotationDialog(QDialog):
         # 본문 텍스트 에디터
         self.editor = QTextEdit()
         self.editor.setAttribute(Qt.WidgetAttribute.WA_InputMethodEnabled, True)
+        self.editor.setAcceptRichText(False)  # 서식 복사로 인한 검은색 폰트 유입 방지
+        pal = self.editor.palette()
+        pal.setColor(QPalette.ColorRole.Text, QColor("#ffffff"))
+        pal.setColor(QPalette.ColorRole.Base, QColor("#1a1a20"))
+        self.editor.setPalette(pal)
+        self.editor.setTextColor(QColor("#ffffff"))
         self.editor.setPlainText(self.initial_text)
         self.editor.setPlaceholderText("환자 상태, 진단 소견, 분석 메모 등을 입력하세요...")
         self.editor.setStyleSheet("""
@@ -159,7 +166,11 @@ class AnnotationDialog(QDialog):
         self.editor.copy()
 
     def _paste_text(self):
-        self.editor.paste()
+        text = QApplication.clipboard().text()
+        if text:
+            self.editor.insertPlainText(text)
+        else:
+            self.editor.paste()
 
     def _clear_selected(self):
         cursor = self.editor.textCursor()

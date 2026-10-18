@@ -150,13 +150,20 @@ class ImplantModel:
             "warning": warning_msg,
         }
 
-    def set_raw_polydata(self, poly: vtk.vtkPolyData) -> None:
+    def set_raw_polydata(self, poly: vtk.vtkPolyData, name: Optional[str] = None) -> None:
         """테스트 및 프로그래밍 방식으로 직접 vtkPolyData를 주입할 때 사용"""
         self._raw_polydata = vtk.vtkPolyData()
         self._raw_polydata.DeepCopy(poly)
-        self._stl_path = None
+        self._stl_path = name
         self._transform_matrix = np.eye(4, dtype=np.float64)
         self._notify_observers()
+
+    def load_from_spec(self, spec, polydata: Optional[vtk.vtkPolyData] = None) -> None:
+        """ImplantSpec 객체로부터 폴리데이터를 로드하여 임플란트 모델 구성"""
+        if polydata is None:
+            from dental_fea_app.placement.implant_generator import ImplantLibraryManager
+            polydata = ImplantLibraryManager.load_implant_polydata(spec)
+        self.set_raw_polydata(polydata, name=spec.name)
 
     # -------------------------------------------------------------------------
     # 로컬 좌표계 및 기하 정보
@@ -348,13 +355,9 @@ class ImplantModel:
             angle = math.acos(np.clip(dot, -1.0, 1.0))
             R = scipy.spatial.transform.Rotation.from_rotvec(angle * axis).as_matrix()
 
-        # 로컬 Apex 좌표 (보통 [0, 0, z_min])
-        apex_local = self.get_local_apex()
-
-        # World 좌표계 상에서 Apex가 point_world에 도달하기 위한 원점 이동 t 계산:
-        # Apex_world = R @ apex_local + t = point_world
-        # => t = point_world - R @ apex_local
-        t = pt_w - (R @ apex_local)
+        # 로컬 Top 좌표 (상단 [0, 0, z_max])를 기준으로 point_world에 식립:
+        top_local = self.get_local_top()
+        t = pt_w - (R @ top_local)
 
         # 4x4 행렬 구성
         T = np.eye(4, dtype=np.float64)

@@ -1,0 +1,15 @@
+{
+  "id": "impl_d60_l50_flat_t4_sq",
+  "name": "Ultra-Wide Short Ø6.0 x 5.0mm (Flat Square 4°)",
+  "diameter_mm": 6.0,
+  "length_mm": 5.0,
+  "taper_deg": 4.0,
+  "top_type": "flat",
+  "thread_type": "square",
+  "micro_threads": false,
+  "pitch_mm": 0.6,
+  "depth_mm": 0.3,
+  "is_custom": false,
+  "created_at": "기본 제공",
+  "file_name": "impl_d60_l50_flat_t4_sq.vtp"
+}

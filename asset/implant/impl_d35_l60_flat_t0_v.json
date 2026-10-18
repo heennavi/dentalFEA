@@ -1,0 +1,15 @@
+{
+  "id": "impl_d35_l60_flat_t0_v",
+  "name": "Straight Flat Ø3.5 x 6.0mm (0° V-Thread)",
+  "diameter_mm": 3.5,
+  "length_mm": 6.0,
+  "taper_deg": 0.0,
+  "top_type": "flat",
+  "thread_type": "triangular",
+  "micro_threads": false,
+  "pitch_mm": 0.6,
+  "depth_mm": 0.3,
+  "is_custom": false,
+  "created_at": "기본 제공",
+  "file_name": "impl_d35_l60_flat_t0_v.vtp"
+}

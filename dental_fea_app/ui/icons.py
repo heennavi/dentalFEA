@@ -4,7 +4,7 @@ icons.py
 플랫폼(Windows, macOS, Linux)에 무관하게 항상 선명한 픽토그램을 제공합니다.
 """
 
-from PySide6.QtGui import QIcon, QPixmap, QPainter, QColor, QPen, QPainterPath, QBrush, QFont
+from PySide6.QtGui import QIcon, QPixmap, QPainter, QColor, QPen, QPainterPath, QBrush, QFont, QPolygonF
 from PySide6.QtCore import Qt, QPointF, QRectF
 
 
@@ -222,6 +222,39 @@ class IconFactory:
 
         painter.end()
         return QIcon(pixmap)
+
+    @classmethod
+    def reset_view(cls, size: int = 24, color: QColor = None) -> QIcon:
+        """2D 뷰 초기화 아이콘 (회전 및 대칭 리셋 - 원형 복원 화살표)"""
+        color = color or cls.COLOR_DEFAULT
+        pixmap, painter = cls._create_canvas(size)
+        painter.setPen(QPen(color, 2))
+
+        # 3/4 원호 (반시계 또는 시계방향 리셋 화살표)
+        c = size / 2.0
+        r = size * 0.35
+        rect = QRectF(c - r, c - r, 2 * r, 2 * r)
+        # 45도부터 270도 회전 원호
+        painter.drawArc(rect, int(45 * 16), int(270 * 16))
+
+        # 끝부분 화살표 머리
+        # 45도 지점: (c + r*cos(45), c - r*sin(45))
+        import math
+        ang = math.radians(45)
+        ax = c + r * math.cos(ang)
+        ay = c - r * math.sin(ang)
+
+        arrow = QPolygonF([
+            QPointF(ax - 1, ay - 4),
+            QPointF(ax + 4, ay - 1),
+            QPointF(ax, ay + 3)
+        ])
+        painter.setBrush(QBrush(color))
+        painter.drawPolygon(arrow)
+
+        painter.end()
+        return QIcon(pixmap)
+
 
     @classmethod
     def view_cube(cls, highlight_face: str, size: int = 24) -> QIcon:
@@ -656,6 +689,46 @@ class IconFactory:
         painter.setBrush(QBrush(color))
         painter.drawEllipse(QPointF(4, cy), 2.5, 2.5)
         painter.drawEllipse(QPointF(size - 4, cy), 2.5, 2.5)
+        painter.end()
+        return QIcon(pixmap)
+
+    @classmethod
+    def implant(cls, size: int = 22, color: QColor = None) -> QIcon:
+        """치과 임플란트 픽스처 벡터 아이콘 (칼라, 테이퍼 바디, 에이펙스, 나사선)"""
+        color = color or cls.COLOR_ACCENT
+        pixmap, painter = cls._create_canvas(size)
+
+        cx = size / 2.0
+        # 1. 상단 칼라(Collar / Platform)
+        painter.setBrush(QBrush(color))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.drawRoundedRect(QRectF(cx - size * 0.24, size * 0.14, size * 0.48, size * 0.12), 1.0, 1.0)
+
+        # 2. 메인 테이퍼 바디 (Tapered Body)
+        from PySide6.QtGui import QPolygonF
+        body = QPolygonF([
+            QPointF(cx - size * 0.20, size * 0.26),
+            QPointF(cx + size * 0.20, size * 0.26),
+            QPointF(cx + size * 0.12, size * 0.76),
+            QPointF(cx - size * 0.12, size * 0.76)
+        ])
+        painter.drawPolygon(body)
+
+        # 3. 에이펙스 (둥근 하단 끝)
+        apex = QPainterPath()
+        apex.moveTo(cx - size * 0.12, size * 0.76)
+        apex.quadTo(QPointF(cx, size * 0.88), QPointF(cx + size * 0.12, size * 0.76))
+        painter.drawPath(apex)
+
+        # 4. 나사선 그루브 (Screw Thread Grooves)
+        groove_color = QColor("#1e222b")
+        pen_groove = QPen(groove_color, max(1.2, size * 0.07), Qt.PenStyle.SolidLine)
+        pen_groove.setCapStyle(Qt.PenCapStyle.RoundCap)
+        painter.setPen(pen_groove)
+        painter.drawLine(QPointF(cx - size * 0.18, size * 0.38), QPointF(cx + size * 0.18, size * 0.42))
+        painter.drawLine(QPointF(cx - size * 0.16, size * 0.51), QPointF(cx + size * 0.16, size * 0.55))
+        painter.drawLine(QPointF(cx - size * 0.14, size * 0.64), QPointF(cx + size * 0.14, size * 0.68))
+
         painter.end()
         return QIcon(pixmap)
 

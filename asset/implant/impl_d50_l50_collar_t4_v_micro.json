@@ -1,0 +1,15 @@
+{
+  "id": "impl_d50_l50_collar_t4_v_micro",
+  "name": "Ultra-Short Wide Ø5.0 x 5.0mm (Collar 4°)",
+  "diameter_mm": 5.0,
+  "length_mm": 5.0,
+  "taper_deg": 4.0,
+  "top_type": "collar",
+  "thread_type": "triangular",
+  "micro_threads": true,
+  "pitch_mm": 0.6,
+  "depth_mm": 0.3,
+  "is_custom": false,
+  "created_at": "기본 제공",
+  "file_name": "impl_d50_l50_collar_t4_v_micro.vtp"
+}

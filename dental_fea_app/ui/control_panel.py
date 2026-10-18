@@ -29,21 +29,22 @@ class ControlPanel(QWidget):
         super().__init__(parent)
         self.state_mgr = state_manager
         self.on_open_3d_viewer = on_open_3d_viewer
-        self.setFixedWidth(240)
+        self.setFixedWidth(260)
 
         main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(4, 4, 4, 4)
-        main_layout.setSpacing(6)
+        main_layout.setContentsMargins(0, 2, 0, 2)
+        main_layout.setSpacing(4)
 
         # 스크롤 영역으로 감싸기
         scroll = QScrollArea(self)
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
         container = QWidget()
         layout = QVBoxLayout(container)
-        layout.setContentsMargins(4, 4, 4, 4)
-        layout.setSpacing(10)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
 
         # 1. 단계별 워크플로 탭
         layout.addWidget(self._create_workflow_tabs())
@@ -176,6 +177,26 @@ class ControlPanel(QWidget):
     def _create_workflow_tabs(self) -> QTabWidget:
         self.workflow_tabs = QTabWidget(self)
         tabs = self.workflow_tabs
+        tabs.setStyleSheet("""
+            QTabWidget::pane {
+                border: 1px solid #3c3c46;
+                padding: 0px;
+                margin: 0px;
+            }
+            QTabBar::tab {
+                background: #21252b;
+                color: #abb2bf;
+                padding: 6px 6px;
+                border: 1px solid #3c3c46;
+                border-bottom: none;
+                font-size: 11px;
+            }
+            QTabBar::tab:selected {
+                background: #282c34;
+                color: #61afef;
+                font-weight: bold;
+            }
+        """)
 
         # 탭 1: Phase 1 영상 정보
         t1 = QWidget()
@@ -198,6 +219,11 @@ class ControlPanel(QWidget):
         t4_layout.addWidget(QLabel("Phase 3: Gmsh 메쉬 생성 및\nCalculiX 유한요소해석(FEA) 연동", t4))
         t4_layout.addStretch()
         tabs.addTab(t4, "4. 해석")
+
+        # CT 이미지가 열리기 전에는 분할(1), 임플란트(2), 해석(3) 비활성화
+        tabs.setTabEnabled(1, False)
+        tabs.setTabEnabled(2, False)
+        tabs.setTabEnabled(3, False)
 
         return tabs
 
@@ -250,6 +276,12 @@ class ControlPanel(QWidget):
             QMessageBox.critical(self, "샘플 로드 오류", f"샘플 데이터를 로드하는 중 오류가 발생했습니다:\n{str(e)}")
 
     def _on_volume_loaded(self, vtk_image):
+        has_vol = (vtk_image is not None)
+        if hasattr(self, "workflow_tabs"):
+            self.workflow_tabs.setTabEnabled(1, has_vol)
+            self.workflow_tabs.setTabEnabled(2, has_vol)
+            self.workflow_tabs.setTabEnabled(3, has_vol)
+
         if hasattr(self, "lbl_meta_dim"):
             dims = self.state_mgr.dimensions
             spc = self.state_mgr.spacing

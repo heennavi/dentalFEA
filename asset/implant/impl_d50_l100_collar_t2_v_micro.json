@@ -1,0 +1,15 @@
+{
+  "id": "impl_d50_l100_collar_t2_v_micro",
+  "name": "Wide Collar Ø5.0 x 10.0mm (2° Micro)",
+  "diameter_mm": 5.0,
+  "length_mm": 10.0,
+  "taper_deg": 2.0,
+  "top_type": "collar",
+  "thread_type": "triangular",
+  "micro_threads": true,
+  "pitch_mm": 0.6,
+  "depth_mm": 0.3,
+  "is_custom": false,
+  "created_at": "기본 제공",
+  "file_name": "impl_d50_l100_collar_t2_v_micro.vtp"
+}

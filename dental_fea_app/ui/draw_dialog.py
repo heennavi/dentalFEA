@@ -17,12 +17,24 @@ from typing import List, Dict, Any
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QGridLayout, QGroupBox,
     QPushButton, QRadioButton, QButtonGroup, QCheckBox, QTableWidget,
-    QTableWidgetItem, QHeaderView, QColorDialog, QMessageBox, QLabel
+    QTableWidgetItem, QHeaderView, QColorDialog, QMessageBox, QLabel,
+    QAbstractItemView
 )
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor, QBrush
 
 from .icons import IconFactory
+
+
+class DeselectableTableWidget(QTableWidget):
+    """빈 영역 클릭 시 선택을 해제하는 테이블 위젯"""
+    def mousePressEvent(self, event):
+        item = self.itemAt(event.position().toPoint())
+        if item is None:
+            self.clearSelection()
+            self.setCurrentItem(None)
+            self.setCurrentCell(-1, -1)
+        super().mousePressEvent(event)
 
 
 class DrawDialog(QDialog):
@@ -43,12 +55,13 @@ class DrawDialog(QDialog):
     visibility_toggled = Signal(bool)
     # 특정 도형 바로가기 (단면 뷰 및 슬라이스 이동): axis_name, slice_idx, world_coord
     navigate_to_item = Signal(str, int, object)
+    # 도형 목록 변경 시그널
+    shapes_updated = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("그리기 도구")
-        self.resize(540, 520)
-        self.setWindowFlags(self.windowFlags() | Qt.WindowType.WindowStaysOnTopHint)
+        self.resize(580, 520)
 
         # 현재 스타일 설정값 (기본 굵기 1)
         self.pen_width = 1
@@ -204,20 +217,19 @@ class DrawDialog(QDialog):
 
         layout.addWidget(opt_group)
 
-        # 2. 중간: 그린 도형 목록 테이블 (번호, 형태, 색상, 단면, 면번호)
+        # 2. 중간: 그린 도형 목록 테이블 (번호, 형태, 색상, 단면, 면번호, 선굵기, 선형태, 선분끝 형태)
         list_group = QGroupBox("그린 도형 목록")
         list_layout = QVBoxLayout(list_group)
 
-        self.table = QTableWidget()
-        self.table.setColumnCount(5)
-        self.table.setHorizontalHeaderLabels(["번호", "형태", "색상", "단면", "면번호"])
-        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
-        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
-        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
-        self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
-        self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
+        self.table = DeselectableTableWidget()
+        self.table.setColumnCount(8)
+        self.table.setHorizontalHeaderLabels(["번호", "형태", "색상", "단면", "면번호", "선굵기", "선형태", "선분끝 형태"])
+        for c in range(8):
+            self.table.horizontalHeader().setSectionResizeMode(c, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(7, QHeaderView.ResizeMode.Stretch)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.itemSelectionChanged.connect(self._on_selection_changed)
         self.table.cellDoubleClicked.connect(self._on_table_double_clicked)
         self.table.setStyleSheet("""
@@ -243,7 +255,7 @@ class DrawDialog(QDialog):
         list_layout.addWidget(self.table)
         layout.addWidget(list_group)
 
-        # 3. 하단 컨트롤 바 ("창이 닫혀도 도형유지" -> "창이 닫혀도 보이기")
+        # 3. 하단 컨트롤 바 ("창이 닫혀도 도형유지" -> "창이 닫혀도 보이기" + 닫기 버튼)
         bottom_bar = QHBoxLayout()
         self.chk_keep = QCheckBox("창이 닫혀도 보이기")
         self.chk_keep.setChecked(True)
@@ -255,10 +267,14 @@ class DrawDialog(QDialog):
         self.btn_clear_all = QPushButton("모두 지우기")
         self.btn_clear_all.clicked.connect(self._clear_all)
 
+        self.btn_close = QPushButton("닫기")
+        self.btn_close.clicked.connect(self._on_close_clicked)
+
         bottom_bar.addWidget(self.chk_keep)
         bottom_bar.addStretch()
         bottom_bar.addWidget(self.btn_del_sel)
         bottom_bar.addWidget(self.btn_clear_all)
+        bottom_bar.addWidget(self.btn_close)
         layout.addLayout(bottom_bar)
 
         # 다이얼로그 전체 스타일
@@ -306,17 +322,82 @@ class DrawDialog(QDialog):
         """)
 
     def _on_selection_changed(self):
+        selected = self.table.selectedItems()
+        if not selected:
+            self.item_selected.emit(-1)
+            return
         row = self.table.currentRow()
         self.item_selected.emit(row)
+
+    def clear_selection(self):
+        """테이블 선택 및 오버레이 하이라이트 완전 해제"""
+        self.table.clearSelection()
+        self.table.setCurrentItem(None)
+        self.table.setCurrentCell(-1, -1)
+        self.item_selected.emit(-1)
 
     def _on_table_double_clicked(self, row: int, col: int):
         if 0 <= row < len(self.shapes):
             shape_info = self.shapes[row]
+            # 1) 해당 단면 및 면번호로 슬라이스 이동
             v_name = shape_info.get("view_name", "")
             s_idx = shape_info.get("slice_idx", 0)
             pts = shape_info.get("pts", [])
             center = pts[0] if pts else None
             self.navigate_to_item.emit(v_name, s_idx, center)
+
+            # 2) 상단 옵션 동기화
+            # 굵기
+            w = shape_info.get("width", 1)
+            self.pen_width = w
+            btn_w = self.bg_width.button(w)
+            if btn_w:
+                btn_w.setChecked(True)
+
+            # 선 형태
+            is_dash = shape_info.get("is_dashed", False)
+            self.is_dashed = is_dash
+            if is_dash:
+                self.btn_dash.setChecked(True)
+            else:
+                self.btn_solid.setChecked(True)
+
+            # 색상
+            col_val = shape_info.get("color")
+            if isinstance(col_val, QColor):
+                self.current_color = col_val
+            elif isinstance(col_val, str):
+                self.current_color = QColor(col_val)
+            matched_color = False
+            for idx, pc in enumerate(self._preset_colors):
+                if pc.name() == self.current_color.name():
+                    btn_c = self.bg_color.button(idx)
+                    if btn_c:
+                        btn_c.setChecked(True)
+                        matched_color = True
+                    break
+            if not matched_color:
+                for b in self.bg_color.buttons():
+                    b.setChecked(False)
+
+            # 선분끝 형태
+            cap = shape_info.get("end_cap", "none")
+            self.end_cap = cap
+            if cap in self._caps:
+                btn_cap = self.bg_cap.button(self._caps.index(cap))
+                if btn_cap:
+                    btn_cap.setChecked(True)
+
+            # 그리기 형태
+            stype = shape_info.get("shape_type", "line")
+            self.shape_type = stype
+            if stype in self._shapes:
+                btn_sh = self.bg_shape.button(self._shapes.index(stype))
+                if btn_sh:
+                    btn_sh.setChecked(True)
+
+            self.table.selectRow(row)
+            self.item_selected.emit(row)
 
     def _on_keep_visible_toggled(self, checked: bool):
         self.keep_visible_after_close = checked
@@ -331,6 +412,19 @@ class DrawDialog(QDialog):
             "shape_type": self.shape_type
         }
         self.style_changed.emit(style)
+        self._apply_style_to_selected_shape()
+
+    def _apply_style_to_selected_shape(self):
+        row = self.table.currentRow()
+        if 0 <= row < len(self.shapes):
+            shape_info = self.shapes[row]
+            shape_info["width"] = self.pen_width
+            shape_info["is_dashed"] = self.is_dashed
+            shape_info["color"] = self.current_color
+            shape_info["end_cap"] = self.end_cap
+            # 도형 고유의 형태(shape_type)는 보존하고 선 스타일만 갱신
+            self._update_table_row(row, shape_info)
+            self.shapes_updated.emit()
 
     def _on_width_changed(self, w_id: int):
         self.pen_width = w_id
@@ -361,7 +455,16 @@ class DrawDialog(QDialog):
     def _on_shape_changed(self, sh_id: int):
         if 0 <= sh_id < len(self._shapes):
             self.shape_type = self._shapes[sh_id]
-            self._emit_style()
+            # 새 그리기 형태 선택 시 기존 도형이 바뀌지 않도록 선택 해제
+            self.clear_selection()
+            style = {
+                "width": self.pen_width,
+                "is_dashed": self.is_dashed,
+                "color": self.current_color,
+                "end_cap": self.end_cap,
+                "shape_type": self.shape_type
+            }
+            self.style_changed.emit(style)
 
     def set_shape_type(self, shape_type: str):
         if shape_type in self._shapes:
@@ -370,7 +473,15 @@ class DrawDialog(QDialog):
             if btn:
                 btn.setChecked(True)
             self.shape_type = shape_type
-            self._emit_style()
+            self.clear_selection()
+            style = {
+                "width": self.pen_width,
+                "is_dashed": self.is_dashed,
+                "color": self.current_color,
+                "end_cap": self.end_cap,
+                "shape_type": self.shape_type
+            }
+            self.style_changed.emit(style)
 
     def get_current_style(self) -> dict:
         return {
@@ -381,32 +492,49 @@ class DrawDialog(QDialog):
             "shape_type": self.shape_type
         }
 
-    def add_shape(self, shape_info: Dict[str, Any]):
-        self.shapes.append(shape_info)
-        row = self.table.rowCount()
-        self.table.insertRow(row)
-
+    def _update_table_row(self, row: int, shape_info: Dict[str, Any]):
         name_map = {
             "select": "선택", "line": "선분", "arrow": "화살표",
             "rect": "사각형", "circle": "원", "freeform": "프리폼"
         }
+        cap_map = {
+            "none": "없음", "single_arrow": "한쪽 화살표",
+            "double_arrow": "양쪽 화살표", "circle": "원형", "double_circle": "양쪽 원형"
+        }
         stype = shape_info.get("shape_type", "line")
         col = shape_info.get("color")
         color_str = col.name() if isinstance(col, QColor) else str(col or "#eb4b4b")
-
         s_idx = shape_info.get("slice_idx", 0)
         plane_no = s_idx + 1
 
         self.table.setItem(row, 0, QTableWidgetItem(str(row + 1)))
         self.table.setItem(row, 1, QTableWidgetItem(name_map.get(stype, stype)))
-        
+
         col_item = QTableWidgetItem(color_str)
         col_item.setForeground(QBrush(QColor(color_str)))
         self.table.setItem(row, 2, col_item)
 
         self.table.setItem(row, 3, QTableWidgetItem(shape_info.get("view_name", "")))
         self.table.setItem(row, 4, QTableWidgetItem(str(plane_no)))
+        self.table.setItem(row, 5, QTableWidgetItem(str(shape_info.get("width", 1))))
+        self.table.setItem(row, 6, QTableWidgetItem("점선" if shape_info.get("is_dashed") else "실선"))
+        cap = shape_info.get("end_cap", "none")
+        self.table.setItem(row, 7, QTableWidgetItem(cap_map.get(cap, cap)))
+
+        for c in range(8):
+            it = self.table.item(row, c)
+            if it:
+                it.setFlags(it.flags() & ~Qt.ItemFlag.ItemIsEditable)
+
+    def add_shape(self, shape_info: Dict[str, Any]):
+        self.shapes.append(shape_info)
+        row = self.table.rowCount()
+        self.table.insertRow(row)
+
+        self._update_table_row(row, shape_info)
+
         self.table.selectRow(row)
+        self.shapes_updated.emit()
 
     def to_dict(self) -> List[Dict[str, Any]]:
         res = []
@@ -418,13 +546,22 @@ class DrawDialog(QDialog):
         return res
 
     def from_dict(self, data_list: List[Dict[str, Any]]):
+        """JSON 데이터로부터 도형 목록 복원 (일괄 로드 최적화)"""
         self.shapes.clear()
         self.table.setRowCount(0)
+        self.table.blockSignals(True)
         for d in data_list:
             item = dict(d)
             if isinstance(item.get("color"), str):
                 item["color"] = QColor(item["color"])
-            self.add_shape(item)
+            self.shapes.append(item)
+            row = self.table.rowCount()
+            self.table.insertRow(row)
+            self._update_table_row(row, item)
+
+        self.table.blockSignals(False)
+        self.clear_selection()
+        self.shapes_updated.emit()
 
     def _delete_selected(self):
         row = self.table.currentRow()
@@ -432,8 +569,8 @@ class DrawDialog(QDialog):
             self.shapes.pop(row)
             self.table.removeRow(row)
             self.item_deleted.emit(row)
-            new_row = self.table.currentRow()
-            self.item_selected.emit(new_row)
+            self.clear_selection()
+            self.shapes_updated.emit()
 
     def _clear_all(self):
         if not self.shapes:
@@ -446,7 +583,8 @@ class DrawDialog(QDialog):
             self.shapes.clear()
             self.table.setRowCount(0)
             self.all_cleared.emit()
-            self.item_selected.emit(-1)
+            self.clear_selection()
+            self.shapes_updated.emit()
 
     def showEvent(self, event):
         self.active_toggled.emit(True)
@@ -455,7 +593,12 @@ class DrawDialog(QDialog):
         self._emit_style()
         super().showEvent(event)
 
+    def _on_close_clicked(self):
+        self.clear_selection()
+        self.close()
+
     def closeEvent(self, event):
+        self.clear_selection()
         self.active_toggled.emit(False)
         # 체크 해제 시 리스트는 유지하되 창 닫히면 2D 화면에서 도형 숨김
         if not self.keep_visible_after_close:
@@ -463,3 +606,4 @@ class DrawDialog(QDialog):
         else:
             self.visibility_toggled.emit(True)
         super().closeEvent(event)
+

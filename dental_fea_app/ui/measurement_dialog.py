@@ -10,12 +10,24 @@ measurement_dialog.py
 from typing import List, Dict, Any, Optional
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QPushButton, QTableWidget,
-    QTableWidgetItem, QHeaderView, QCheckBox, QLabel, QFileDialog, QMessageBox
+    QTableWidgetItem, QHeaderView, QCheckBox, QLabel, QFileDialog, QMessageBox,
+    QAbstractItemView
 )
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor
 
 from .icons import IconFactory
+
+
+class DeselectableTableWidget(QTableWidget):
+    """빈 영역 클릭 시 선택을 해제하는 테이블 위젯"""
+    def mousePressEvent(self, event):
+        item = self.itemAt(event.position().toPoint())
+        if item is None:
+            self.clearSelection()
+            self.setCurrentItem(None)
+            self.setCurrentCell(-1, -1)
+        super().mousePressEvent(event)
 
 
 class MeasurementDialog(QDialog):
@@ -36,12 +48,13 @@ class MeasurementDialog(QDialog):
     navigate_to_item = Signal(str, int, object)
     # 캡처 저장 요청 시그널
     request_capture = Signal()
+    # 계측 목록 변경(추가/삭제) 시그널
+    measurements_updated = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("단면 계측 도구")
         self.resize(520, 360)
-        self.setWindowFlags(self.windowFlags() | Qt.WindowType.WindowStaysOnTopHint)
 
         self.current_mode = "none"  # 'length', 'angle', 'none'
         self.measurements: List[Dict[str, Any]] = []
@@ -89,7 +102,7 @@ class MeasurementDialog(QDialog):
         layout.addLayout(btn_bar)
 
         # 계측 목록 테이블 (슬라이스 -> 면번호)
-        self.table = QTableWidget()
+        self.table = DeselectableTableWidget()
         self.table.setColumnCount(4)
         self.table.setHorizontalHeaderLabels(["타입", "측정값", "단면", "면번호"])
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
@@ -98,6 +111,7 @@ class MeasurementDialog(QDialog):
         self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.itemSelectionChanged.connect(self._on_selection_changed)
         self.table.cellDoubleClicked.connect(self._on_table_double_clicked)
         self.table.setStyleSheet("""
@@ -126,7 +140,7 @@ class MeasurementDialog(QDialog):
         bottom_bar = QHBoxLayout()
         bottom_bar.addStretch()
         self.btn_close = QPushButton("닫기")
-        self.btn_close.clicked.connect(self.close)
+        self.btn_close.clicked.connect(self._on_close_clicked)
         bottom_bar.addWidget(self.btn_close)
         layout.addLayout(bottom_bar)
 
@@ -160,10 +174,22 @@ class MeasurementDialog(QDialog):
         """)
 
     def _on_selection_changed(self):
+        selected = self.table.selectedItems()
+        if not selected:
+            self.item_selected.emit(-1)
+            return
         row = self.table.currentRow()
         self.item_selected.emit(row)
 
+    def clear_selection(self):
+        """테이블 선택 및 오버레이 하이라이트 완전 해제"""
+        self.table.clearSelection()
+        self.table.setCurrentItem(None)
+        self.table.setCurrentCell(-1, -1)
+        self.item_selected.emit(-1)
+
     def _on_table_double_clicked(self, row: int, col: int):
+        self.table.selectRow(row)
         self._navigate_to_row(row)
 
     def _on_mode_button_clicked(self, mode: str):
@@ -204,12 +230,13 @@ class MeasurementDialog(QDialog):
         s_idx = item.get("slice_idx", 0)
         plane_no = s_idx + 1
 
-        self.table.setItem(row, 0, QTableWidgetItem(type_text))
-        self.table.setItem(row, 1, QTableWidgetItem(item.get("value_str", "")))
-        self.table.setItem(row, 2, QTableWidgetItem(item.get("view_name", "")))
-        self.table.setItem(row, 3, QTableWidgetItem(str(plane_no)))
+        for c, text in enumerate([type_text, item.get("value_str", ""), item.get("view_name", ""), str(plane_no)]):
+            t_item = QTableWidgetItem(text)
+            t_item.setFlags(t_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            self.table.setItem(row, c, t_item)
 
         self.table.selectRow(row)
+        self.measurements_updated.emit()
 
     def _on_delete_selected(self):
         row = self.table.currentRow()
@@ -217,9 +244,8 @@ class MeasurementDialog(QDialog):
             self.measurements.pop(row)
             self.table.removeRow(row)
             self.item_deleted.emit(row)
-            # 삭제 후 남은 행 선택 또는 선택 해제
-            new_row = self.table.currentRow()
-            self.item_selected.emit(new_row)
+            self.clear_selection()
+            self.measurements_updated.emit()
 
     def _on_clear_all(self):
         if not self.measurements:
@@ -232,7 +258,8 @@ class MeasurementDialog(QDialog):
             self.measurements.clear()
             self.table.setRowCount(0)
             self.all_cleared.emit()
-            self.item_selected.emit(-1)
+            self.clear_selection()
+            self.measurements_updated.emit()
 
     def _navigate_to_row(self, row: int):
         if 0 <= row < len(self.measurements):
@@ -256,16 +283,39 @@ class MeasurementDialog(QDialog):
         return list(self.measurements)
 
     def from_dict(self, data_list: List[Dict[str, Any]]):
-        """JSON 데이터로부터 계측 목록 복원"""
+        """JSON 데이터로부터 계측 목록 복원 (일괄 로드 최적화)"""
         self.measurements.clear()
         self.table.setRowCount(0)
+        self.table.blockSignals(True)
         for d in data_list:
-            self.add_measurement(dict(d))
+            item = dict(d)
+            self.measurements.append(item)
+            row = self.table.rowCount()
+            self.table.insertRow(row)
+
+            type_text = "길이" if item.get("type") == "length" else "각도"
+            s_idx = item.get("slice_idx", 0)
+            plane_no = s_idx + 1
+
+            for c, text in enumerate([type_text, item.get("value_str", ""), item.get("view_name", ""), str(plane_no)]):
+                t_item = QTableWidgetItem(text)
+                t_item.setFlags(t_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                self.table.setItem(row, c, t_item)
+
+        self.table.blockSignals(False)
+        self.clear_selection()
+        self.measurements_updated.emit()
+
+    def _on_close_clicked(self):
+        self.clear_selection()
+        self.close()
 
     def closeEvent(self, event):
-        # 창 닫힐 때 측정 모드 해제
+        # 창 닫힐 때 측정 모드 및 선택 해제
         self.set_mode("none")
+        self.clear_selection()
         # 선분 보이기 상태를 확실히 전달
         self.visibility_toggled.emit(self.chk_show_lines.isChecked())
         super().closeEvent(event)
+
 

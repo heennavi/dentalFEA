@@ -142,7 +142,7 @@ class TestImplantManager:
             assert pytest.approx(dz, rel=1e-2) == 4.0 or pytest.approx(dz, rel=1e-2) == 10.0
 
     def test_place_at_accuracy(self):
-        """place_at 호출 후 apex 위치와 장축 방향 벡터 정밀도 검증"""
+        """place_at 호출 후 Top 위치와 장축 방향 벡터 정밀도 검증 (상단 기준 식립)"""
         with tempfile.TemporaryDirectory() as tmpdir:
             stl_file = os.path.join(tmpdir, "fixture.stl")
             create_cylinder_stl_file(stl_file, radius=2.0, height=10.0, z_min=-5.0)
@@ -150,27 +150,27 @@ class TestImplantManager:
             implant = ImplantModel(stl_file)
 
             # 테스트 1: 식립 지점 point_world = [10.0, 20.0, 30.0], 수직 상향 식립 axis = [0, 0, 1]
-            target_apex = np.array([10.0, 20.0, 30.0])
+            target_top = np.array([10.0, 20.0, 30.0])
             target_axis = np.array([0.0, 0.0, 1.0])
-            implant.place_at(target_apex, target_axis)
+            implant.place_at(target_top, target_axis)
 
-            computed_apex = implant.get_world_apex()
+            computed_top = implant.get_world_top()
             computed_axis = implant.get_world_axis()
-            np.testing.assert_allclose(computed_apex, target_apex, atol=1e-5)
+            np.testing.assert_allclose(computed_top, target_top, atol=1e-5)
             np.testing.assert_allclose(computed_axis, target_axis, atol=1e-5)
 
-            # Top 위치는 Apex + 길이(10mm) * axis여야 함
-            computed_top = implant.get_world_top()
-            expected_top = target_apex + target_axis * 10.0
-            np.testing.assert_allclose(computed_top, expected_top, atol=1e-5)
+            # Apex 위치는 Top - 길이(10mm) * axis여야 함
+            computed_apex = implant.get_world_apex()
+            expected_apex = target_top - target_axis * 10.0
+            np.testing.assert_allclose(computed_apex, expected_apex, atol=1e-5)
 
             # 테스트 2: 45도 기울어진 경사 식립 (예: [0, 1, 1] 방향)
             t_axis_45 = np.array([0.0, 1.0, 1.0]) / np.sqrt(2)
-            implant.place_at(target_apex, t_axis_45)
+            implant.place_at(target_top, t_axis_45)
 
-            computed_apex_45 = implant.get_world_apex()
+            computed_top_45 = implant.get_world_top()
             computed_axis_45 = implant.get_world_axis()
-            np.testing.assert_allclose(computed_apex_45, target_apex, atol=1e-5)
+            np.testing.assert_allclose(computed_top_45, target_top, atol=1e-5)
             np.testing.assert_allclose(computed_axis_45, t_axis_45, atol=1e-5)
 
     def test_rotation_and_inverse_transform_restoration(self):
@@ -238,8 +238,8 @@ class TestImplantManager:
             create_cylinder_stl_file(stl_file, radius=2.0, height=10.0, z_min=0.0)
 
             implant = ImplantModel(stl_file)
-            # Apex를 (15, 15, 5)에 두고 Z축(+Z) 방향으로 10mm 배치
-            implant.place_at(point_world=[15.0, 15.0, 5.0], axis_world=[0.0, 0.0, 1.0])
+            # Top을 (15, 15, 15)에 두고 Z축(+Z) 방향으로 10mm 배치 -> Apex는 z=5, Top은 z=15
+            implant.place_at(point_world=[15.0, 15.0, 15.0], axis_world=[0.0, 0.0, 1.0])
 
             distances, hu_vals = sample_hu_along_axis(
                 volume=hu_grid,
@@ -274,20 +274,20 @@ class TestImplantManager:
 
             implant = ImplantModel(stl_file)
 
-            # 케이스 1: 완전히 뼈 내부(z: 20 ~ 30)에 배치 -> 비율 1.0
-            implant.place_at(point_world=[20.0, 20.0, 20.0], axis_world=[0.0, 0.0, 1.0])
+            # 케이스 1: 완전히 뼈 내부(z: 20 ~ 30)에 배치 (Top=30) -> 비율 1.0
+            implant.place_at(point_world=[20.0, 20.0, 30.0], axis_world=[0.0, 0.0, 1.0])
             poly1 = implant.get_transformed_polydata()
             ratio1 = bone_overlap_ratio(poly1, mask, mask_geom)
             assert pytest.approx(ratio1, abs=1e-2) == 1.0
 
-            # 케이스 2: 완전히 뼈 외부(z: 0 ~ 10)에 배치 -> 비율 0.0
-            implant.place_at(point_world=[20.0, 20.0, 0.0], axis_world=[0.0, 0.0, 1.0])
+            # 케이스 2: 완전히 뼈 외부(z: 0 ~ 10)에 배치 (Top=10) -> 비율 0.0
+            implant.place_at(point_world=[20.0, 20.0, 10.0], axis_world=[0.0, 0.0, 1.0])
             poly2 = implant.get_transformed_polydata()
             ratio2 = bone_overlap_ratio(poly2, mask, mask_geom)
             assert pytest.approx(ratio2, abs=1e-2) == 0.0
 
             # 케이스 3: 절반 걸친 경우 (Apex=10, Top=20, 경계=15) -> 약 0.5
-            implant.place_at(point_world=[20.0, 20.0, 10.0], axis_world=[0.0, 0.0, 1.0])
+            implant.place_at(point_world=[20.0, 20.0, 20.0], axis_world=[0.0, 0.0, 1.0])
             poly3 = implant.get_transformed_polydata()
             ratio3 = bone_overlap_ratio(poly3, mask, mask_geom)
             assert 0.4 <= ratio3 <= 0.6

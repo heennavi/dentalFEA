@@ -37,8 +37,9 @@ class StateManager(QObject):
     # 임플란트(Implant) Signals
     implant_model_changed = Signal(object)              # ImplantModel or None
     implant_pose_changed = Signal(object)               # ImplantModel or None
-
-
+    implant_selected = Signal(str)                      # implant_id (선택 해제 시 "")
+    implant_transformed = Signal(str)                   # implant_id (2D/3D 기즈모 변환 동기화)
+    render_all_requested = Signal()                     # 전역 렌더링 요청 Signal
 
     def __init__(self, parent: Optional[QObject] = None):
         super().__init__(parent)
@@ -76,6 +77,10 @@ class StateManager(QObject):
 
         # 임플란트(Implant) 상태
         self._implant_model = None
+        from dental_fea_app.placement.implant_placement_manager import ImplantPlacementManager
+        self.implant_placement_mgr = ImplantPlacementManager()
+        self.implant_placement_mgr.set_state_manager(self)
+        self.coordinates_changed.connect(lambda x, y, z: self.implant_placement_mgr.update_2d_slice_contours((x, y, z)))
 
     @property
     def implant_model(self):
@@ -290,3 +295,7 @@ class StateManager(QObject):
         if 0 <= ix < nx and 0 <= iy < ny and 0 <= iz < nz:
             return float(self._vtk_image.GetScalarComponentAsDouble(ix, iy, iz, 0))
         return None
+
+    def request_render_all(self):
+        """2D MPR 및 3D 뷰어 등 모든 활성 뷰포트에 즉각 렌더링을 요청합니다."""
+        self.render_all_requested.emit()

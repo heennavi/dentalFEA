@@ -15,9 +15,9 @@ from vtkmodules.qt.QVTKRenderWindowInteractor import QVTKRenderWindowInteractor
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QToolBar, QComboBox, QPushButton, QLabel, QStatusBar,
-    QCheckBox, QSlider, QFrame, QToolButton, QGroupBox
+    QCheckBox, QSlider, QFrame, QToolButton, QGroupBox, QMenu
 )
-from PySide6.QtCore import Qt, Signal, QSize, QTimer
+from PySide6.QtCore import Qt, Signal, QSize, QTimer, QEvent
 from PySide6.QtGui import QAction, QMouseEvent, QIcon, QColor
 
 from dental_fea_app.core.state_manager import StateManager
@@ -65,10 +65,10 @@ class VolumeViewerWindow(QMainWindow):
     """
     window_closed = Signal()
 
-    def __init__(self, state_manager: StateManager, parent: Optional[QWidget] = None):
+    def __init__(self, state_manager: StateManager, parent: Optional[QWidget] = None, settings_mgr: Optional[SettingsManager] = None):
         super().__init__(parent)
         self.state_mgr = state_manager
-        self.settings_mgr = SettingsManager()
+        self.settings_mgr = settings_mgr if settings_mgr is not None else SettingsManager()
         self.setWindowTitle("Dental FEA - 3D Volume & Mesh Viewer")
         self.resize(920, 720)
 
@@ -135,6 +135,9 @@ class VolumeViewerWindow(QMainWindow):
         # 3D ROI 바운딩 박스 (파란색 육면체 외곽선)
         self._init_roi_box()
 
+        # 3D 현재 위치 표시자 (2mm 빨간 구 및 축 색상 긴 십자선)
+        self._init_position_indicators()
+
         # 우측 설정 사이드바 패널 생성 (기본 활성화)
         self.panel = self._create_settings_sidebar()
         self.main_layout.addWidget(self.panel, stretch=0)
@@ -161,12 +164,30 @@ class VolumeViewerWindow(QMainWindow):
         self.state_mgr.segmentation_visibility_changed.connect(self._on_segmentation_visibility_changed)
         self.state_mgr.implant_model_changed.connect(self._on_implant_model_changed)
         self.state_mgr.implant_pose_changed.connect(self._on_implant_pose_changed)
+        self.state_mgr.render_all_requested.connect(self.request_render)
 
         # 3D 분할 표면 메쉬 액터 초기화
         self._init_segmentation_surface_actors()
 
         # 3D 임플란트 메쉬 액터 초기화
         self._init_implant_actor()
+
+        # 다중 임플란트 3D 렌더러 등록 및 3D Transform 기즈모 초기화
+        self.state_mgr.implant_placement_mgr.set_renderer_3d(self.renderer)
+        from dental_fea_app.placement.implant_gizmo import ImplantTransformGizmo
+        self.implant_gizmo_3d = ImplantTransformGizmo(self.renderer, self.state_mgr.implant_placement_mgr)
+
+        self.state_mgr.implant_selected.connect(self._on_implant_selected_3d)
+        self.state_mgr.implant_transformed.connect(self._on_implant_transformed_3d)
+
+        # 이미 선택된 임플란트가 있을 경우 기즈모 즉시 부착
+        sel_imp = self.state_mgr.implant_placement_mgr.get_selected_implant()
+        if sel_imp and hasattr(self, "implant_gizmo_3d"):
+            self.implant_gizmo_3d.attach_to_implant(sel_imp.id)
+
+        # 마우스 상호작용 이벤트 필터
+        self.vtkWidget.installEventFilter(self)
+        self.vtkWidget.setMouseTracking(True)
 
         if self.state_mgr.vtk_image is not None:
             self.on_volume_loaded(self.state_mgr.vtk_image)
@@ -256,6 +277,79 @@ class VolumeViewerWindow(QMainWindow):
         self._box_widget_updating = True
         self.state_mgr.set_roi_bounds(bounds)
         self._box_widget_updating = False
+
+    def _init_position_indicators(self):
+        """2mm 직경 빨간 구 및 축 색상 긴 십자선 액터 초기화"""
+        # 1. 빨간 구 (직경 2mm -> 반경 1mm)
+        self._sphere_source = vtk.vtkSphereSource()
+        self._sphere_source.SetRadius(1.0)
+        self._sphere_source.SetThetaResolution(16)
+        self._sphere_source.SetPhiResolution(16)
+        sphere_mapper = vtk.vtkPolyDataMapper()
+        sphere_mapper.SetInputConnection(self._sphere_source.GetOutputPort())
+
+        self._sphere_actor = vtk.vtkActor()
+        self._sphere_actor.SetMapper(sphere_mapper)
+        self._sphere_actor.GetProperty().SetColor(1.0, 0.0, 0.0)
+        self._sphere_actor.GetProperty().SetAmbient(0.3)
+        self._sphere_actor.GetProperty().SetDiffuse(0.8)
+        self._sphere_actor.SetVisibility(False)
+        self.renderer.AddActor(self._sphere_actor)
+
+        # 2. 축 색상 긴 십자선 (X: 빨강, Y: 초록, Z: 파랑)
+        self._cross_x_source = vtk.vtkLineSource()
+        mapper_x = vtk.vtkPolyDataMapper()
+        mapper_x.SetInputConnection(self._cross_x_source.GetOutputPort())
+        self._cross_x_actor = vtk.vtkActor()
+        self._cross_x_actor.SetMapper(mapper_x)
+        self._cross_x_actor.GetProperty().SetColor(1.0, 0.2, 0.2)
+        self._cross_x_actor.GetProperty().SetLineWidth(1.5)
+        self._cross_x_actor.GetProperty().SetOpacity(0.125)
+        self._cross_x_actor.GetProperty().LightingOff()
+        self._cross_x_actor.SetVisibility(False)
+        self.renderer.AddActor(self._cross_x_actor)
+
+        self._cross_y_source = vtk.vtkLineSource()
+        mapper_y = vtk.vtkPolyDataMapper()
+        mapper_y.SetInputConnection(self._cross_y_source.GetOutputPort())
+        self._cross_y_actor = vtk.vtkActor()
+        self._cross_y_actor.SetMapper(mapper_y)
+        self._cross_y_actor.GetProperty().SetColor(0.2, 1.0, 0.2)
+        self._cross_y_actor.GetProperty().SetLineWidth(1.5)
+        self._cross_y_actor.GetProperty().SetOpacity(0.125)
+        self._cross_y_actor.GetProperty().LightingOff()
+        self._cross_y_actor.SetVisibility(False)
+        self.renderer.AddActor(self._cross_y_actor)
+
+        self._cross_z_source = vtk.vtkLineSource()
+        mapper_z = vtk.vtkPolyDataMapper()
+        mapper_z.SetInputConnection(self._cross_z_source.GetOutputPort())
+        self._cross_z_actor = vtk.vtkActor()
+        self._cross_z_actor.SetMapper(mapper_z)
+        self._cross_z_actor.GetProperty().SetColor(0.2, 0.5, 1.0)
+        self._cross_z_actor.GetProperty().SetLineWidth(1.5)
+        self._cross_z_actor.GetProperty().SetOpacity(0.125)
+        self._cross_z_actor.GetProperty().LightingOff()
+        self._cross_z_actor.SetVisibility(False)
+        self.renderer.AddActor(self._cross_z_actor)
+
+    def _update_position_indicators(self, x: float, y: float, z: float):
+        if hasattr(self, "_sphere_source"):
+            self._sphere_source.SetCenter(x, y, z)
+            self._sphere_source.Update()
+        if hasattr(self, "_cross_x_source"):
+            span = 200.0
+            self._cross_x_source.SetPoint1(x - span, y, z)
+            self._cross_x_source.SetPoint2(x + span, y, z)
+            self._cross_x_source.Update()
+
+            self._cross_y_source.SetPoint1(x, y - span, z)
+            self._cross_y_source.SetPoint2(x, y + span, z)
+            self._cross_y_source.Update()
+
+            self._cross_z_source.SetPoint1(x, y, z - span)
+            self._cross_z_source.SetPoint2(x, y, z + span)
+            self._cross_z_source.Update()
 
     def _init_orientation_marker(self):
 
@@ -549,9 +643,66 @@ class VolumeViewerWindow(QMainWindow):
         roi_layout.addWidget(self.chk_roi_box)
 
         layout.addWidget(roi_group)
+
+        # 6. 옵션 그룹 (선택 좌표 동기화, 현재 위치 표시, 현재 위치 크로스 선)
+        opt_group = QGroupBox("옵션", panel)
+        opt_group.setStyleSheet("""
+            QGroupBox {
+                font-size: 11px;
+                font-weight: bold;
+                color: #e0e0e0;
+                border: 1px solid #3c3c46;
+                border-radius: 4px;
+                margin-top: 6px;
+                padding-top: 6px;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 6px;
+                padding: 0 3px;
+            }
+        """)
+        opt_layout = QVBoxLayout(opt_group)
+        opt_layout.setContentsMargins(4, 4, 4, 4)
+        opt_layout.setSpacing(4)
+
+        self.chk_sync_coords = QCheckBox("선택 좌표 동기화", opt_group)
+        self.chk_sync_coords.setChecked(True)
+        self.chk_sync_coords.setToolTip("임플란트를 선택했을 때 해당 위치 좌표를 2D/3D 모든 창과 동조합니다.")
+        opt_layout.addWidget(self.chk_sync_coords)
+
+        self.chk_show_sphere = QCheckBox("현재 위치 표시", opt_group)
+        self.chk_show_sphere.setChecked(False)
+        self.chk_show_sphere.setToolTip("선택된 좌표 위치에 직경 2mm의 빨간색 구를 표시합니다.")
+        self.chk_show_sphere.toggled.connect(self._on_show_sphere_toggled)
+        opt_layout.addWidget(self.chk_show_sphere)
+
+        self.chk_show_crosslines = QCheckBox("현재 위치 크로스 선", opt_group)
+        self.chk_show_crosslines.setChecked(False)
+        self.chk_show_crosslines.setToolTip("선택된 좌표를 중심으로 축 색상의 긴 십자선을 표시합니다.")
+        self.chk_show_crosslines.toggled.connect(self._on_show_crosslines_toggled)
+        opt_layout.addWidget(self.chk_show_crosslines)
+
+        layout.addWidget(opt_group)
         layout.addStretch()
 
         return panel
+
+    def _on_show_sphere_toggled(self, checked: bool):
+        if hasattr(self, "_sphere_actor"):
+            self._sphere_actor.SetVisibility(checked)
+            if checked:
+                self._update_position_indicators(*self.state_mgr.current_coords)
+            self.render()
+
+    def _on_show_crosslines_toggled(self, checked: bool):
+        if hasattr(self, "_cross_x_actor"):
+            self._cross_x_actor.SetVisibility(checked)
+            self._cross_y_actor.SetVisibility(checked)
+            self._cross_z_actor.SetVisibility(checked)
+            if checked:
+                self._update_position_indicators(*self.state_mgr.current_coords)
+            self.render()
 
 
     def _toggle_settings_panel(self, checked: bool):
@@ -566,16 +717,6 @@ class VolumeViewerWindow(QMainWindow):
         self.slider_opacity.setValue(opacity_val)
         self.lbl_opacity_val.setText(f"{opacity_val}%")
 
-        self.chk_plane_axial.setChecked(self.settings_mgr.get("volume_3d.show_axial_plane", False))
-        self.chk_plane_coronal.setChecked(self.settings_mgr.get("volume_3d.show_coronal_plane", False))
-        self.chk_plane_sagittal.setChecked(self.settings_mgr.get("volume_3d.show_sagittal_plane", False))
-
-        # ROI 설정 복원
-        roi_apply = self.settings_mgr.get("volume_3d.roi_apply", False)
-        roi_box = self.settings_mgr.get("volume_3d.roi_box", True)
-        self.chk_roi_apply.setChecked(roi_apply)
-        self.chk_roi_box.setChecked(roi_box)
-
         # 윈도우 위치/크기 복원
         geom = self.settings_mgr.get("volume_3d.geometry")
         if geom:
@@ -586,7 +727,6 @@ class VolumeViewerWindow(QMainWindow):
                 pass
 
     def _on_roi_apply_toggled(self, checked: bool):
-        self.settings_mgr.set("volume_3d.roi_apply", checked)
         self._update_volume_cropping()
 
     def _on_roi_boundary_btn_toggled(self, checked: bool):
@@ -602,7 +742,6 @@ class VolumeViewerWindow(QMainWindow):
         self._update_roi_box_visibility()
 
     def _on_roi_box_toggled(self, checked: bool):
-        self.settings_mgr.set("volume_3d.roi_box", checked)
         self.state_mgr.roi_box_visibility_changed.emit(checked)
         self._update_roi_box_visibility()
 
@@ -700,17 +839,42 @@ class VolumeViewerWindow(QMainWindow):
         has_volume = self.state_mgr.vtk_image is not None
         if plane_type == "axial":
             self.axial_plane_actor.SetVisibility(visible and has_volume)
-            self.settings_mgr.set("volume_3d.show_axial_plane", visible)
         elif plane_type == "coronal":
             self.coronal_plane_actor.SetVisibility(visible and has_volume)
-            self.settings_mgr.set("volume_3d.show_coronal_plane", visible)
         elif plane_type == "sagittal":
             self.sagittal_plane_actor.SetVisibility(visible and has_volume)
-            self.settings_mgr.set("volume_3d.show_sagittal_plane", visible)
+
+        if has_volume:
+            self._update_plane_coordinates(*self.state_mgr.current_coords)
         self.render()
 
+    def _update_plane_coordinates(self, x: float, y: float, z: float):
+        """현재 십자선 월드 좌표로 3D 슬라이스 평면 지오메트리 갱신"""
+        bx0, bx1, by0, by1, bz0, bz1 = self.state_mgr.bounds
+
+        # Axial Plane: XY 평면, Z = z
+        if self.axial_plane_actor.GetVisibility():
+            self.axial_plane_source.SetOrigin(bx0, by0, z)
+            self.axial_plane_source.SetPoint1(bx1, by0, z)
+            self.axial_plane_source.SetPoint2(bx0, by1, z)
+            self.axial_plane_source.Update()
+
+        # Coronal Plane: XZ 평면, Y = y
+        if self.coronal_plane_actor.GetVisibility():
+            self.coronal_plane_source.SetOrigin(bx0, y, bz0)
+            self.coronal_plane_source.SetPoint1(bx1, y, bz0)
+            self.coronal_plane_source.SetPoint2(bx0, y, bz1)
+            self.coronal_plane_source.Update()
+
+        # Sagittal Plane: YZ 평면, X = x
+        if self.sagittal_plane_actor.GetVisibility():
+            self.sagittal_plane_source.SetOrigin(x, by0, bz0)
+            self.sagittal_plane_source.SetPoint1(x, by1, bz0)
+            self.sagittal_plane_source.SetPoint2(x, by0, bz1)
+            self.sagittal_plane_source.Update()
+
     def on_coordinates_changed(self, x: float, y: float, z: float):
-        """2D MPR에서 클릭/이동된 월드 좌표에 맞춰 3D 슬라이스 평면 위치 동조"""
+        """2D MPR에서 클릭/이동된 월드 좌표에 맞춰 3D 슬라이스 평면 및 위치 표시자 위치 동조"""
         if self.state_mgr.vtk_image is None or not self.isVisible():
             return
 
@@ -721,30 +885,17 @@ class VolumeViewerWindow(QMainWindow):
             or self.sagittal_plane_actor.GetVisibility()
         )
         has_active_clip = (self._current_clip_mode != "O")
+        has_sphere = hasattr(self, "_sphere_actor") and self._sphere_actor.GetVisibility()
+        has_cross = hasattr(self, "_cross_x_actor") and self._cross_x_actor.GetVisibility()
 
-        # 평면 표시도 없고 클리핑도 활성화되어 있지 않다면 3D 렌더링 생략 (엄청난 성능 향상)
-        if not has_visible_plane and not has_active_clip:
+        if not has_visible_plane and not has_active_clip and not has_sphere and not has_cross:
             return
 
-        bx0, bx1, by0, by1, bz0, bz1 = self.state_mgr.bounds
+        if has_visible_plane:
+            self._update_plane_coordinates(x, y, z)
 
-        # Axial Plane: XY 평면, Z = z
-        if self.axial_plane_actor.GetVisibility():
-            self.axial_plane_source.SetOrigin(bx0, by0, z)
-            self.axial_plane_source.SetPoint1(bx1, by0, z)
-            self.axial_plane_source.SetPoint2(bx0, by1, z)
-
-        # Coronal Plane: XZ 평면, Y = y
-        if self.coronal_plane_actor.GetVisibility():
-            self.coronal_plane_source.SetOrigin(bx0, y, bz0)
-            self.coronal_plane_source.SetPoint1(bx1, y, bz0)
-            self.coronal_plane_source.SetPoint2(bx0, y, bz1)
-
-        # Sagittal Plane: YZ 평면, X = x
-        if self.sagittal_plane_actor.GetVisibility():
-            self.sagittal_plane_source.SetOrigin(x, by0, bz0)
-            self.sagittal_plane_source.SetPoint1(x, by1, bz0)
-            self.sagittal_plane_source.SetPoint2(x, by0, bz1)
+        if has_sphere or has_cross:
+            self._update_position_indicators(x, y, z)
 
         # 만약 활성화된 클리핑 플레인이 있다면 위치 업데이트
         if has_active_clip:
@@ -834,10 +985,30 @@ class VolumeViewerWindow(QMainWindow):
         self.volume_mapper.SetInputData(vtk_image)
         self.volume.SetVisibility(True)
 
-        # 평면 액터 가시성 복원
-        self._set_plane_visible("axial", self.chk_plane_axial.isChecked())
-        self._set_plane_visible("coronal", self.chk_plane_coronal.isChecked())
-        self._set_plane_visible("sagittal", self.chk_plane_sagittal.isChecked())
+        # 1. 3D 음영사용 및 투명도 설정 적용
+        shading = self.chk_shading.isChecked()
+        self.volume_property.SetShade(shading)
+        opacity_scale = self.slider_opacity.value() / 100.0
+
+        # 2. 기본 골조직 프리셋 항상 적용 (원상 복구)
+        self.preset_combo.setCurrentIndex(0)
+        self.apply_bone_preset()
+        self._rescale_opacity(opacity_scale)
+
+        # 3. 슬라이스 평면 액터 초기화 (기본 꺼짐)
+        self.chk_plane_axial.setChecked(False)
+        self.chk_plane_coronal.setChecked(False)
+        self.chk_plane_sagittal.setChecked(False)
+        self._set_plane_visible("axial", False)
+        self._set_plane_visible("coronal", False)
+        self._set_plane_visible("sagittal", False)
+
+        # 4. ROI 설정 초기화 (저장된 바운더리 복원 제거, 기본 전체 볼륨)
+        self.chk_roi_apply.setChecked(False)
+        self.chk_roi_box.setChecked(True)
+        self.state_mgr.set_roi_bounds(None)
+        self._update_volume_cropping()
+        self._update_roi_box_visibility()
 
         self.on_coordinates_changed(*self.state_mgr.current_coords)
         # 초기 오픈 시 요구사항에 따라 항상 정면 시점(Front View)으로 설정
@@ -940,6 +1111,7 @@ class VolumeViewerWindow(QMainWindow):
             return
         if self.vtkWidget.GetRenderWindow():
             self.vtkWidget.GetRenderWindow().Render()
+            self.vtkWidget.update()
 
     def render(self):
         """즉시 3D 렌더링을 실행합니다."""
@@ -1005,8 +1177,149 @@ class VolumeViewerWindow(QMainWindow):
                 self._orient_widget_enabled = False
         except Exception:
             pass
+
+        try:
+            self.state_mgr.implant_selected.disconnect(self._on_implant_selected_3d)
+        except Exception:
+            pass
+        try:
+            self.state_mgr.implant_transformed.disconnect(self._on_implant_transformed_3d)
+        except Exception:
+            pass
+
+        try:
+            self.state_mgr.implant_placement_mgr.set_renderer_3d(None)
+        except Exception:
+            pass
+
         self.window_closed.emit()
         super().closeEvent(event)
+
+    def eventFilter(self, obj, event):
+        """3D VTK 위젯 마우스 이벤트를 가로채어 3D 임플란트 기즈모 조작 및 선택 처리"""
+        if obj == self.vtkWidget:
+            etype = event.type()
+            if etype == QEvent.Type.MouseButtonPress:
+                if event.button() == Qt.MouseButton.LeftButton:
+                    pos = event.position().toPoint()
+                    screen_x = pos.x()
+                    screen_y = self.vtkWidget.height() - pos.y()
+
+                    # 1) 3D 기즈모 핸들 조작 체크
+                    if hasattr(self, "implant_gizmo_3d") and self.implant_gizmo_3d.is_attached:
+                        if self.implant_gizmo_3d.start_drag(None, screen_x, screen_y, self.renderer):
+                            self.render()
+                            return True
+
+                    # 2) 3D 임플란트 피킹 체크
+                    hit_imp = self.state_mgr.implant_placement_mgr.find_implant_by_screen_ray(self.renderer, screen_x, screen_y)
+                    if hit_imp:
+                        self.state_mgr.implant_placement_mgr.select_implant(hit_imp.id, multi_select=False)
+                        self.implant_gizmo_3d.attach_to_implant(hit_imp.id)
+                        if hasattr(self, "chk_sync_coords") and self.chk_sync_coords.isChecked():
+                            self.state_mgr.set_coordinates(float(hit_imp.position[0]), float(hit_imp.position[1]), float(hit_imp.position[2]))
+                        self.render()
+                        return True
+                    elif hasattr(self, "implant_gizmo_3d") and self.implant_gizmo_3d.is_attached:
+                        # 빈 영역 클릭 시 기즈모 해제
+                        self.state_mgr.implant_placement_mgr.clear_selection()
+                        self.implant_gizmo_3d.detach()
+                        self.render()
+
+                elif event.button() == Qt.MouseButton.RightButton:
+                    pos = event.position().toPoint()
+                    screen_x = pos.x()
+                    screen_y = self.vtkWidget.height() - pos.y()
+                    hit_imp = self.state_mgr.implant_placement_mgr.find_implant_by_screen_ray(self.renderer, screen_x, screen_y)
+                    if not hit_imp and self.state_mgr.implant_placement_mgr.selected_ids:
+                        hit_imp = self.state_mgr.implant_placement_mgr.get_selected_implant()
+
+                    if hit_imp:
+                        self.state_mgr.implant_placement_mgr.select_implant(hit_imp.id, multi_select=False)
+                        self.implant_gizmo_3d.attach_to_implant(hit_imp.id)
+                        self.render()
+
+                    self._show_implant_context_menu(event.globalPosition().toPoint(), hit_imp)
+                    return True
+
+            elif etype == QEvent.Type.MouseMove:
+                pos = event.position().toPoint()
+                screen_x = pos.x()
+                screen_y = self.vtkWidget.height() - pos.y()
+
+                if hasattr(self, "implant_gizmo_3d") and self.implant_gizmo_3d.is_dragging:
+                    if self.implant_gizmo_3d.update_drag(screen_x, screen_y, self.renderer):
+                        self.render()
+                    return True
+                elif hasattr(self, "implant_gizmo_3d") and self.implant_gizmo_3d.is_attached:
+                    if self.implant_gizmo_3d.highlight_handle(None, screen_x, screen_y, self.renderer):
+                        self.render()
+
+            elif etype == QEvent.Type.MouseButtonRelease:
+                if event.button() == Qt.MouseButton.LeftButton:
+                    if hasattr(self, "implant_gizmo_3d") and self.implant_gizmo_3d.is_dragging:
+                        self.implant_gizmo_3d.end_drag()
+                        self.render()
+                        return True
+
+        return super().eventFilter(obj, event)
+
+    def _show_implant_context_menu(self, global_pos, target_imp):
+        menu = QMenu(self)
+        menu.setStyleSheet("""
+            QMenu {
+                background-color: #1e293b;
+                color: #f8fafc;
+                border: 1px solid #334155;
+                padding: 4px;
+            }
+            QMenu::item {
+                padding: 6px 20px;
+                border-radius: 4px;
+            }
+            QMenu::item:selected {
+                background-color: #0284c7;
+            }
+            QMenu::item:disabled {
+                color: #64748b;
+            }
+        """)
+
+        act_change_pos = menu.addAction("위치 변경")
+        act_change_pos.setEnabled(target_imp is not None)
+
+        act_del_this = menu.addAction("이 임플란트 삭제")
+        act_del_this.setEnabled(target_imp is not None)
+
+        act_del_all = menu.addAction("전체 임플란트 삭제")
+        has_implants = bool(self.state_mgr.implant_placement_mgr.implants)
+        act_del_all.setEnabled(has_implants)
+
+        action = menu.exec(global_pos)
+        if action == act_change_pos and target_imp is not None:
+            self._open_implant_transform_dialog(target_imp)
+        elif action == act_del_this and target_imp is not None:
+            self.state_mgr.implant_placement_mgr.delete_implant(target_imp.id)
+            if hasattr(self, "implant_gizmo_3d"):
+                self.implant_gizmo_3d.detach()
+            self.render()
+        elif action == act_del_all:
+            self.state_mgr.implant_placement_mgr.delete_all_implants()
+            if hasattr(self, "implant_gizmo_3d"):
+                self.implant_gizmo_3d.detach()
+            self.render()
+
+    def _open_implant_transform_dialog(self, imp):
+        from dental_fea_app.ui.placement.implant_transform_dialog import ImplantTransformDialog
+        if hasattr(self, "_transform_dialog") and self._transform_dialog is not None:
+            try:
+                self._transform_dialog.close()
+            except Exception:
+                pass
+        self._transform_dialog = ImplantTransformDialog(imp, self.state_mgr, self)
+        self._transform_dialog.show()
+        self._transform_dialog.raise_()
+        self._transform_dialog.activateWindow()
 
     def _init_segmentation_surface_actors(self):
         """3D 분할 표면 메쉬(피질골, 수질골) 파이프라인 초기화"""
@@ -1122,4 +1435,26 @@ class VolumeViewerWindow(QMainWindow):
         else:
             self.implant_actor.SetVisibility(False)
         self.request_render()
+
+    def _on_implant_selected_3d(self, implant_id: str):
+        """2D 뷰 또는 다이얼로그에서 임플란트 선택 변경 시 3D 기즈모 및 좌표 동기화"""
+        if not hasattr(self, "implant_gizmo_3d"):
+            return
+        if implant_id and implant_id in self.state_mgr.implant_placement_mgr.implants:
+            self.implant_gizmo_3d.attach_to_implant(implant_id)
+            if hasattr(self, "chk_sync_coords") and self.chk_sync_coords.isChecked():
+                imp = self.state_mgr.implant_placement_mgr.implants[implant_id]
+                self.state_mgr.set_coordinates(float(imp.position[0]), float(imp.position[1]), float(imp.position[2]))
+        else:
+            self.implant_gizmo_3d.detach()
+        self.render()
+
+    def _on_implant_transformed_3d(self, implant_id: str):
+        """2D 뷰 또는 기즈모 드래그로 임플란트 포즈 변경 시 3D 기즈모 및 3D 뷰 동기화"""
+        if not hasattr(self, "implant_gizmo_3d"):
+            return
+        active_id = getattr(self.implant_gizmo_3d, "active_implant_id", None)
+        if self.implant_gizmo_3d.is_attached and active_id == implant_id:
+            self.implant_gizmo_3d.update_transform()
+        self.render()
 

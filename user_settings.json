@@ -5,7 +5,7 @@
       "show_ruler": false,
       "rotation": 0,
       "flip_h": false,
-      "flip_v": true
+      "flip_v": false
     },
     "Coronal": {
       "show_crosshair": true,
@@ -23,15 +23,9 @@
     }
   },
   "volume_3d": {
-    "shading": true,
-    "opacity": 0.6,
-    "show_axial_plane": false,
-    "show_coronal_plane": false,
-    "show_sagittal_plane": false,
-    "preset_index": 0,
-    "geometry": "01d9d0cb0003000000000242000000a1000005d90000039500000242000000c6000005d90000039500000000000000000d7000000242000000c6000005d900000395",
-    "roi_apply": true,
-    "roi_box": false
+    "shading": false,
+    "opacity": 0.29,
+    "geometry": "01d9d0cb000300000000031700000023000006ae000003170000031700000048000006ae0000031700000000000000000d700000031700000048000006ae00000317"
   },
   "window_level": {
     "window": 1500.0,
@@ -40,16 +34,16 @@
   },
   "mpr_container": {
     "v_sizes": [
-      554,
-      496
+      14,
+      14
     ],
     "h_sizes": [
-      595,
-      631
+      49,
+      49
     ]
   },
   "main_window": {
-    "geometry": "01d9d0cb00030000000006d80000004c00000ca3000004f3000006d80000007100000ca3000004f300000000000000000d70000006d80000007100000ca3000004f3"
+    "geometry": "01d9d0cb000300000000004200000042000004a10000034d0000004200000042000004a10000034d00000000000000000d700000004200000042000004a10000034d"
   },
   "recent_files": [
     "/test/path/dir4",
