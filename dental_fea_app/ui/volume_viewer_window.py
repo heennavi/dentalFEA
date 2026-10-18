@@ -206,14 +206,7 @@ class VolumeViewerWindow(QMainWindow):
         self.state_mgr.implant_selected.connect(self._on_implant_selected_3d)
         self.state_mgr.implant_transformed.connect(self._on_implant_transformed_3d)
 
-        # FEA 기하 솔리드 액터 초기화 및 신호 연결
-        self._init_fea_geometry_actors()
-        self.state_mgr.fea_geometry_changed.connect(self._on_fea_geometry_changed)
-        self.state_mgr.fea_visibility_changed.connect(self._on_fea_visibility_changed)
-        self.state_mgr.fea_clipping_changed.connect(self._on_fea_clipping_changed)
-
-        if getattr(self.state_mgr, "fea_geometry", None):
-            self._on_fea_geometry_changed(self.state_mgr.fea_geometry)
+        # (FEA 기하 표시는 메인 화면 우측 하단 뷰어에 표시하므로 별도 3D 창에서는 비활성화)
 
         # 이미 선택된 임플란트가 있을 경우 기즈모 즉시 부착
         sel_imp = self.state_mgr.implant_placement_mgr.get_selected_implant()
@@ -286,7 +279,7 @@ class VolumeViewerWindow(QMainWindow):
         self.box_widget = vtk.vtkBoxWidget()
         self.box_widget.SetInteractor(self.vtkWidget._Iren)
         self.box_widget.SetPlaceFactor(1.0)
-        self.box_widget.SetRotationEnabled(False)  # 각 축에 정렬된 직육면체 유지
+        self.box_widget.SetRotationEnabled(True)  # 회전 기능 활성화
         self.box_widget.SetTranslationEnabled(True)
         self.box_widget.SetScalingEnabled(True)
         
@@ -302,8 +295,171 @@ class VolumeViewerWindow(QMainWindow):
         # StateManager 신호 연결
         self.state_mgr.roi_bounds_changed.connect(self._on_roi_bounds_updated)
 
+        # 3D ROI 각 축별 회전 링 기즈모(Gizmo) 초기화
+        self._init_roi_rotation_gizmo()
+
+    def _init_roi_rotation_gizmo(self):
+        """ROI boundary box의 중심에 배치되는 3D 회전 기즈모(X: Pitch 빨강, Y: Roll 초록, Z: Yaw 파랑 링) 초기화"""
+        self._roi_dragging_axis = None
+        self._roi_drag_start_x = 0
+        self._roi_drag_start_y = 0
+        self.roi_gizmo_actors = {}
+        self.roi_gizmo_tube_filters = {}
+
+        self._roi_gizmo_base_colors = {
+            "X": (1.0, 0.22, 0.22),
+            "Y": (0.22, 0.95, 0.28),
+            "Z": (0.25, 0.65, 1.00),
+        }
+        self._roi_gizmo_highlight_colors = {
+            "X": (1.0, 0.70, 0.70),
+            "Y": (0.70, 1.00, 0.75),
+            "Z": (0.70, 0.90, 1.00),
+        }
+
+        # Z: XY 평면 (Z축 수직 회전)
+        # X: YZ 평면 (X축 수직 회전)
+        # Y: XZ 평면 (Y축 수직 회전)
+        rings_def = [
+            ("Z", 0.0, 0.0, 0.0),
+            ("X", 0.0, 90.0, 0.0),
+            ("Y", 90.0, 0.0, 0.0),
+        ]
+
+        for axis, rx, ry, rz in rings_def:
+            circle = vtk.vtkRegularPolygonSource()
+            circle.SetNumberOfSides(64)
+            circle.SetRadius(1.0)
+            circle.GeneratePolygonOff()
+            circle.Update()
+
+            tube = vtk.vtkTubeFilter()
+            tube.SetInputConnection(circle.GetOutputPort())
+            tube.SetRadius(0.04)
+            tube.SetNumberOfSides(16)
+            tube.Update()
+            self.roi_gizmo_tube_filters[axis] = tube
+
+            trans = vtk.vtkTransform()
+            trans.RotateX(rx)
+            trans.RotateY(ry)
+            trans.RotateZ(rz)
+
+            tf = vtk.vtkTransformFilter()
+            tf.SetInputConnection(tube.GetOutputPort())
+            tf.SetTransform(trans)
+            tf.Update()
+
+            mapper = vtk.vtkPolyDataMapper()
+            mapper.SetInputConnection(tf.GetOutputPort())
+
+            actor = vtk.vtkActor()
+            actor.SetMapper(mapper)
+            c = self._roi_gizmo_base_colors[axis]
+            actor.GetProperty().SetColor(c[0], c[1], c[2])
+            actor.GetProperty().SetAmbient(1.0)
+            actor.GetProperty().SetDiffuse(0.0)
+            actor.GetProperty().SetLighting(False)
+            actor.SetVisibility(False)
+            self.renderer.AddActor(actor)
+            self.roi_gizmo_actors[axis] = actor
+
+        # 호환성을 위한 액터 참조 별칭
+        self.roi_rot_actor_x = self.roi_gizmo_actors["X"]
+        self.roi_rot_actor_y = self.roi_gizmo_actors["Y"]
+        self.roi_rot_actor_z = self.roi_gizmo_actors["Z"]
+
+    def _disable_box_widget_outline_picking(self):
+        """vtkBoxWidget의 테두리 선분 및 면을 클릭했을 때 박스가 왜곡되거나 원치않게 스케일링되는 현상 방지"""
+        if not hasattr(self, "box_widget"):
+            return
+        props = self.renderer.GetViewProps()
+        props.InitTraversal()
+        for i in range(props.GetNumberOfItems()):
+            p = props.GetNextProp()
+            if hasattr(p, "GetProperty"):
+                prop = p.GetProperty()
+                if prop in (self.box_widget.GetOutlineProperty(),
+                            self.box_widget.GetSelectedOutlineProperty(),
+                            self.box_widget.GetFaceProperty(),
+                            self.box_widget.GetSelectedFaceProperty()):
+                    p.SetPickable(0)
+
+    def _get_roi_box_corners_and_center(self):
+        """ROI box widget의 현재 8개 모서리 및 정확한 중심 좌표 반환"""
+        if not hasattr(self, "box_widget"):
+            return None, None
+        poly = vtk.vtkPolyData()
+        self.box_widget.GetPolyData(poly)
+        pts = poly.GetPoints()
+        if not pts or pts.GetNumberOfPoints() < 8:
+            return None, None
+        corners = [np.array(pts.GetPoint(i), dtype=np.float64) for i in range(8)]
+        center = np.mean(corners, axis=0)
+        return corners, center
+
+    def _update_roi_rotation_points(self):
+        """ROI boundary box의 현재 위치/크기/자세에 맞추어 3D 회전 기즈모(링) 위치 및 반경 갱신"""
+        if not hasattr(self, "box_widget") or not hasattr(self, "roi_gizmo_actors"):
+            return
+        is_rotate_checked = hasattr(self, "chk_roi_rotate") and self.chk_roi_rotate.isChecked()
+        is_box_visible = hasattr(self, "chk_roi_box") and self.chk_roi_box.isChecked()
+        if not (is_rotate_checked and is_box_visible):
+            for actor in self.roi_gizmo_actors.values():
+                actor.SetVisibility(False)
+            return
+
+        corners, center = self._get_roi_box_corners_and_center()
+        if center is None:
+            return
+
+        # 박스의 대각선 길이를 기준으로 적절한 링 반경 계산
+        dists = [np.linalg.norm(c - center) for c in corners]
+        max_dist = max(dists) if dists else 10.0
+        gizmo_radius = max(8.0, max_dist * 0.85)
+        tube_radius = max(0.4, gizmo_radius * 0.035)
+
+        for axis, actor in self.roi_gizmo_actors.items():
+            self.roi_gizmo_tube_filters[axis].SetRadius(tube_radius / gizmo_radius)
+            actor.SetPosition(center[0], center[1], center[2])
+            actor.SetScale(gizmo_radius, gizmo_radius, gizmo_radius)
+            actor.SetVisibility(True)
+
+    def rotate_roi_box(self, axis: str, angle_deg: float):
+        """ROI boundary box를 크기 왜곡 없이 중심점 기준으로 지정한 축(X, Y, Z)에 따라 angle_deg만큼 정확히 회전"""
+        if not hasattr(self, "box_widget"):
+            return
+
+        corners, center = self._get_roi_box_corners_and_center()
+        if center is None:
+            return
+
+        current_trans = vtk.vtkTransform()
+        self.box_widget.GetTransform(current_trans)
+
+        rot_trans = vtk.vtkTransform()
+        rot_trans.PostMultiply()
+        rot_trans.Concatenate(current_trans)
+        rot_trans.Translate(-center[0], -center[1], -center[2])
+        ax = axis.upper()
+        if ax == "X":
+            rot_trans.RotateX(angle_deg)
+        elif ax == "Y":
+            rot_trans.RotateY(angle_deg)
+        elif ax == "Z":
+            rot_trans.RotateZ(angle_deg)
+        rot_trans.Translate(center[0], center[1], center[2])
+
+        self._box_widget_updating = True
+        self.box_widget.SetTransform(rot_trans)
+        self._box_widget_updating = False
+
+        self._on_box_widget_interaction(None, None)
+        self._update_roi_rotation_points()
+        self.render()
+
     def _on_box_widget_interaction(self, obj, event):
-        """3D 창에서 박스의 선분/면/핸들을 드래그할 때 실시간 크롭 및 바운더리 갱신"""
+        """3D 창에서 박스의 핸들을 드래그할 때 실시간 크롭 및 바운더리 갱신"""
         if self._box_widget_updating:
             return
         poly = vtk.vtkPolyData()
@@ -312,6 +468,7 @@ class VolumeViewerWindow(QMainWindow):
         self._box_widget_updating = True
         self.state_mgr.set_roi_bounds(bounds)
         self._box_widget_updating = False
+        self._update_roi_rotation_points()
 
     def _init_position_indicators(self):
         """2mm 직경 빨간 구 및 축 색상 긴 십자선 액터 초기화"""
@@ -672,6 +829,19 @@ class VolumeViewerWindow(QMainWindow):
         self.btn_roi_boundary.toggled.connect(self._on_roi_boundary_btn_toggled)
         roi_layout.addWidget(self.btn_roi_boundary)
 
+        # 3D 회전 기즈모 표시/숨김 체크박스
+        self.chk_roi_rotate = QCheckBox("회전", roi_group)
+        self.chk_roi_rotate.setChecked(False)
+        self.chk_roi_rotate.setToolTip("체크 시 3D 뷰에 ROI 박스 회전용 3D 기즈모(링)를 표시합니다.")
+        self.chk_roi_rotate.toggled.connect(self._on_roi_rotate_toggled)
+        roi_layout.addWidget(self.chk_roi_rotate)
+
+        # 원래대로 리셋 기능 체크박스
+        self.chk_roi_reset = QCheckBox("원래대로", roi_group)
+        self.chk_roi_reset.setChecked(False)
+        self.chk_roi_reset.toggled.connect(self._on_roi_reset_toggled)
+        roi_layout.addWidget(self.chk_roi_reset)
+
         self.chk_roi_box = QCheckBox("Box 보이기", roi_group)
         self.chk_roi_box.setChecked(True)
         self.chk_roi_box.toggled.connect(self._on_roi_box_toggled)
@@ -775,6 +945,36 @@ class VolumeViewerWindow(QMainWindow):
         else:
             self.statusBar().showMessage("ROI boundary 설정 모드가 종료되었습니다.")
         self._update_roi_box_visibility()
+        self._update_roi_rotation_points()
+
+    def _on_roi_rotate_toggled(self, checked: bool):
+        """회전 체크박스 토글 시 3D 회전 기즈모 표시/숨김 갱신"""
+        self._update_roi_rotation_points()
+        self.render()
+        if checked:
+            self.statusBar().showMessage("ROI 3D 회전 기즈모가 활성화되었습니다. 링을 클릭/드래그하여 회전하세요.")
+        else:
+            self.statusBar().showMessage("ROI 3D 회전 기즈모가 숨겨졌습니다.")
+
+    def _on_roi_reset_toggled(self, checked: bool):
+        if checked:
+            if self.state_mgr.vtk_image is not None:
+                full_bounds = self.state_mgr.bounds
+                self._box_widget_updating = True
+                try:
+                    self.box_widget.PlaceWidget(full_bounds)
+                    t_identity = vtk.vtkTransform()
+                    self.box_widget.SetTransform(t_identity)
+                except Exception:
+                    pass
+                self.state_mgr.set_roi_bounds(full_bounds)
+                self._box_widget_updating = False
+                self._update_volume_cropping()
+                self._update_roi_box_visibility()
+                self._update_roi_rotation_points()
+                self.render()
+                self.statusBar().showMessage("ROI boundary가 전체 볼륨 원본 크기 및 각도로 복원되었습니다.")
+            self.chk_roi_reset.setChecked(False)
 
     def _on_roi_box_toggled(self, checked: bool):
         self.state_mgr.roi_box_visibility_changed.emit(checked)
@@ -784,7 +984,7 @@ class VolumeViewerWindow(QMainWindow):
         """2D 뷰 또는 3D 위젯에서 사각형이 조절되어 새로운 바운더리가 설정되었을 때 호출"""
         if bounds is not None:
             self.roi_box_source.SetBounds(bounds)
-            if not self._box_widget_updating:
+            if not self._box_widget_updating and not self.box_widget.GetEnabled():
                 try:
                     self.box_widget.PlaceWidget(bounds)
                 except Exception:
@@ -825,10 +1025,12 @@ class VolumeViewerWindow(QMainWindow):
         has_volume = self.state_mgr.vtk_image is not None
 
         if show_box and is_boundary_mode and has_bounds and has_volume:
-            # boundary 설정 모드에서는 3D 상에서 직접 핸들/면/선분을 잡고 크기 조절할 수 있도록 box_widget 활성화
+            # boundary 설정 모드에서는 3D 상에서 직접 핸들로 크기 조절할 수 있도록 box_widget 활성화
             try:
-                self.box_widget.PlaceWidget(self.state_mgr.roi_bounds)
-                self.box_widget.On()
+                if not self.box_widget.GetEnabled():
+                    self.box_widget.PlaceWidget(self.state_mgr.roi_bounds)
+                    self.box_widget.On()
+                self._disable_box_widget_outline_picking()
             except Exception:
                 pass
             self.roi_box_actor.SetVisibility(False)
@@ -845,6 +1047,7 @@ class VolumeViewerWindow(QMainWindow):
                 pass
             self.roi_box_actor.SetVisibility(False)
 
+        self._update_roi_rotation_points()
         self.render()
 
 
@@ -1038,10 +1241,11 @@ class VolumeViewerWindow(QMainWindow):
         self._set_plane_visible("coronal", False)
         self._set_plane_visible("sagittal", False)
 
-        # 4. ROI 설정 초기화 (저장된 바운더리 복원 제거, 기본 전체 볼륨)
-        self.chk_roi_apply.setChecked(False)
+        # 4. ROI 설정 초기화 (기존 사용자가 설정한 바운더리가 없을 때만 None으로 초기화)
+        self.chk_roi_apply.setChecked(self.state_mgr.roi_bounds is not None)
         self.chk_roi_box.setChecked(True)
-        self.state_mgr.set_roi_bounds(None)
+        if self.state_mgr.roi_bounds is None:
+            self.state_mgr.set_roi_bounds(None)
         self._update_volume_cropping()
         self._update_roi_box_visibility()
 
@@ -1240,6 +1444,26 @@ class VolumeViewerWindow(QMainWindow):
                     screen_x = pos.x()
                     screen_y = self.vtkWidget.height() - pos.y()
 
+                    # 0) 3D ROI 회전 기즈모(링) 피킹 체크 (boundary 설정 모드일 때)
+                    if hasattr(self, "btn_roi_boundary") and self.btn_roi_boundary.isChecked() and hasattr(self, "roi_gizmo_actors"):
+                        is_any_gizmo_visible = any(a.GetVisibility() for a in self.roi_gizmo_actors.values())
+                        if is_any_gizmo_visible:
+                            picker = vtk.vtkPropPicker()
+                            if picker.Pick(screen_x, screen_y, 0, self.renderer):
+                                hit_actor = picker.GetActor()
+                                for axis, actor in self.roi_gizmo_actors.items():
+                                    if hit_actor == actor:
+                                        self._roi_dragging_axis = axis
+                                        self.statusBar().showMessage(f"ROI {axis}축 회전 기즈모를 드래그 중입니다...")
+                                        self._roi_drag_start_x = screen_x
+                                        self._roi_drag_start_y = screen_y
+                                        # 활성 축 하이라이트
+                                        for ax_key, act in self.roi_gizmo_actors.items():
+                                            c = self._roi_gizmo_highlight_colors[ax_key] if ax_key == axis else self._roi_gizmo_base_colors[ax_key]
+                                            act.GetProperty().SetColor(c[0], c[1], c[2])
+                                        self.render()
+                                        return True
+
                     # 1) 3D 기즈모 핸들 조작 체크
                     if hasattr(self, "implant_gizmo_3d") and self.implant_gizmo_3d.is_attached:
                         if self.implant_gizmo_3d.start_drag(None, screen_x, screen_y, self.renderer):
@@ -1282,6 +1506,39 @@ class VolumeViewerWindow(QMainWindow):
                 screen_x = pos.x()
                 screen_y = self.vtkWidget.height() - pos.y()
 
+                # ROI 회전 조절점 드래그 중인 경우
+                if getattr(self, "_roi_dragging_axis", None) is not None:
+                    dx = screen_x - self._roi_drag_start_x
+                    dy = screen_y - self._roi_drag_start_y
+                    delta_angle = (dx + dy) * 0.4
+                    if abs(delta_angle) >= 0.4:
+                        self.rotate_roi_box(self._roi_dragging_axis, delta_angle)
+                        self._roi_drag_start_x = screen_x
+                        self._roi_drag_start_y = screen_y
+                    return True
+
+                # ROI 기즈모 마우스 호버 하이라이트 체크
+                if hasattr(self, "btn_roi_boundary") and self.btn_roi_boundary.isChecked() and hasattr(self, "roi_gizmo_actors"):
+                    is_any_gizmo_visible = any(a.GetVisibility() for a in self.roi_gizmo_actors.values())
+                    if is_any_gizmo_visible and not (hasattr(self, "implant_gizmo_3d") and self.implant_gizmo_3d.is_dragging):
+                        picker = vtk.vtkPropPicker()
+                        hovered_axis = None
+                        if picker.Pick(screen_x, screen_y, 0, self.renderer):
+                            hit = picker.GetActor()
+                            for ax_key, act in self.roi_gizmo_actors.items():
+                                if hit == act:
+                                    hovered_axis = ax_key
+                                    break
+                        changed = False
+                        for ax_key, act in self.roi_gizmo_actors.items():
+                            c = self._roi_gizmo_highlight_colors[ax_key] if ax_key == hovered_axis else self._roi_gizmo_base_colors[ax_key]
+                            old_c = act.GetProperty().GetColor()
+                            if old_c != c:
+                                act.GetProperty().SetColor(c[0], c[1], c[2])
+                                changed = True
+                        if changed:
+                            self.render()
+
                 if hasattr(self, "implant_gizmo_3d") and self.implant_gizmo_3d.is_dragging:
                     if self.implant_gizmo_3d.update_drag(screen_x, screen_y, self.renderer):
                         self.render()
@@ -1291,6 +1548,16 @@ class VolumeViewerWindow(QMainWindow):
                         self.render()
 
             elif etype == QEvent.Type.MouseButtonRelease:
+                if getattr(self, "_roi_dragging_axis", None) is not None:
+                    self.statusBar().showMessage(f"ROI {self._roi_dragging_axis}축 회전이 완료되었습니다.")
+                    self._roi_dragging_axis = None
+                    if hasattr(self, "roi_gizmo_actors"):
+                        for ax_key, act in self.roi_gizmo_actors.items():
+                            c = self._roi_gizmo_base_colors[ax_key]
+                            act.GetProperty().SetColor(c[0], c[1], c[2])
+                        self.render()
+                    return True
+
                 if event.button() == Qt.MouseButton.LeftButton:
                     if hasattr(self, "implant_gizmo_3d") and self.implant_gizmo_3d.is_dragging:
                         self.implant_gizmo_3d.end_drag()
@@ -1493,147 +1760,5 @@ class VolumeViewerWindow(QMainWindow):
             self.implant_gizmo_3d.update_transform()
         self.render()
 
-    def _init_fea_geometry_actors(self):
-        """FEA 기하 솔리드(피질골, 수질골, 임플란트) 3D 액터 및 단면 클리핑 파이프라인 초기화"""
-        self.fea_clip_plane = vtk.vtkPlane()
-        self.fea_clip_plane.SetOrigin(0.0, 0.0, 0.0)
-        self.fea_clip_plane.SetNormal(0.0, 0.0, 1.0)
 
-        # 1. 피질골 솔리드 (연갈색/핑크레드)
-        self.fea_cortical_mapper = vtk.vtkPolyDataMapper()
-        self.fea_cortical_actor = vtk.vtkActor()
-        self.fea_cortical_actor.SetMapper(self.fea_cortical_mapper)
-        self.fea_cortical_actor.GetProperty().SetColor(0.88, 0.42, 0.46)
-        self.fea_cortical_actor.GetProperty().SetOpacity(0.85)
-        self.fea_cortical_actor.GetProperty().SetSpecular(0.25)
-        self.fea_cortical_actor.GetProperty().SetSpecularPower(20.0)
-        self.fea_cortical_actor.SetVisibility(False)
-        self.renderer.AddActor(self.fea_cortical_actor)
-
-        # 2. 수질골 솔리드 (스카이블루)
-        self.fea_cancellous_mapper = vtk.vtkPolyDataMapper()
-        self.fea_cancellous_actor = vtk.vtkActor()
-        self.fea_cancellous_actor.SetMapper(self.fea_cancellous_mapper)
-        self.fea_cancellous_actor.GetProperty().SetColor(0.38, 0.69, 0.94)
-        self.fea_cancellous_actor.GetProperty().SetOpacity(0.85)
-        self.fea_cancellous_actor.GetProperty().SetSpecular(0.25)
-        self.fea_cancellous_actor.GetProperty().SetSpecularPower(20.0)
-        self.fea_cancellous_actor.SetVisibility(False)
-        self.renderer.AddActor(self.fea_cancellous_actor)
-
-        # 3. 임플란트 솔리드 (티타늄 골드)
-        self.fea_implant_mapper = vtk.vtkPolyDataMapper()
-        self.fea_implant_actor = vtk.vtkActor()
-        self.fea_implant_actor.SetMapper(self.fea_implant_mapper)
-        self.fea_implant_actor.GetProperty().SetColor(0.85, 0.65, 0.35)
-        self.fea_implant_actor.GetProperty().SetOpacity(1.0)
-        self.fea_implant_actor.GetProperty().SetSpecular(0.6)
-        self.fea_implant_actor.GetProperty().SetSpecularPower(40.0)
-        self.fea_implant_actor.SetVisibility(False)
-        self.renderer.AddActor(self.fea_implant_actor)
-
-        self._fea_bounds = None
-
-    def _on_fea_geometry_changed(self, fea_geom):
-        """FEA 기하 솔리드가 생성/갱신되었을 때 3D 표면 매핑"""
-        if fea_geom is None:
-            self.fea_cortical_actor.SetVisibility(False)
-            self.fea_cancellous_actor.SetVisibility(False)
-            self.fea_implant_actor.SetVisibility(False)
-            self.render()
-            return
-
-        poly_c = trimesh_to_vtk_polydata(fea_geom.cortical)
-        poly_cn = trimesh_to_vtk_polydata(fea_geom.cancellous)
-        poly_i = trimesh_to_vtk_polydata(fea_geom.implant)
-
-        self.fea_cortical_mapper.SetInputData(poly_c)
-        self.fea_cancellous_mapper.SetInputData(poly_cn)
-        self.fea_implant_mapper.SetInputData(poly_i)
-
-        all_bounds = []
-        for poly in [poly_c, poly_cn, poly_i]:
-            if poly.GetNumberOfPoints() > 0:
-                all_bounds.append(poly.GetBounds())
-        if all_bounds:
-            b_arr = np.array(all_bounds)
-            self._fea_bounds = (
-                float(b_arr[:, 0].min()), float(b_arr[:, 1].max()),
-                float(b_arr[:, 2].min()), float(b_arr[:, 3].max()),
-                float(b_arr[:, 4].min()), float(b_arr[:, 5].max()),
-            )
-
-        self._apply_fea_visibility()
-        self._apply_fea_clipping()
-        self.render()
-
-    def _on_fea_visibility_changed(self, vis: dict):
-        self._apply_fea_visibility()
-        self.render()
-
-    def _apply_fea_visibility(self):
-        geom = getattr(self.state_mgr, "fea_geometry", None)
-        if geom is None:
-            self.fea_cortical_actor.SetVisibility(False)
-            self.fea_cancellous_actor.SetVisibility(False)
-            self.fea_implant_actor.SetVisibility(False)
-            return
-
-        vis = self.state_mgr.fea_visibility
-        opacity = float(vis.get("opacity", 0.85))
-
-        self.fea_cortical_actor.SetVisibility(bool(vis.get("cortical", True)))
-        self.fea_cortical_actor.GetProperty().SetOpacity(opacity)
-
-        self.fea_cancellous_actor.SetVisibility(bool(vis.get("cancellous", True)))
-        self.fea_cancellous_actor.GetProperty().SetOpacity(opacity)
-
-        self.fea_implant_actor.SetVisibility(bool(vis.get("implant", True)))
-        self.fea_implant_actor.GetProperty().SetOpacity(1.0)
-
-    def _on_fea_clipping_changed(self, clip: dict):
-        self._apply_fea_clipping()
-        self.render()
-
-    def _apply_fea_clipping(self):
-        clip = getattr(self.state_mgr, "fea_clipping", None)
-        if clip is None or not clip.get("enabled", False):
-            self.fea_cortical_mapper.RemoveAllClippingPlanes()
-            self.fea_cancellous_mapper.RemoveAllClippingPlanes()
-            self.fea_implant_mapper.RemoveAllClippingPlanes()
-            return
-
-        axis = clip.get("axis", "Z")
-        pct = float(clip.get("value_pct", 50.0)) / 100.0
-        inverted = bool(clip.get("inverted", False))
-
-        bounds = self._fea_bounds or self.state_mgr.bounds
-        normal = [0.0, 0.0, 0.0]
-        origin = [0.0, 0.0, 0.0]
-
-        if axis == "X":
-            x_min, x_max = bounds[0], bounds[1]
-            origin[0] = x_min + (x_max - x_min) * pct
-            origin[1] = (bounds[2] + bounds[3]) / 2.0
-            origin[2] = (bounds[4] + bounds[5]) / 2.0
-            normal[0] = -1.0 if inverted else 1.0
-        elif axis == "Y":
-            y_min, y_max = bounds[2], bounds[3]
-            origin[0] = (bounds[0] + bounds[1]) / 2.0
-            origin[1] = y_min + (y_max - y_min) * pct
-            origin[2] = (bounds[4] + bounds[5]) / 2.0
-            normal[1] = -1.0 if inverted else 1.0
-        else:
-            z_min, z_max = bounds[4], bounds[5]
-            origin[0] = (bounds[0] + bounds[1]) / 2.0
-            origin[1] = (bounds[2] + bounds[3]) / 2.0
-            origin[2] = z_min + (z_max - z_min) * pct
-            normal[2] = -1.0 if inverted else 1.0
-
-        self.fea_clip_plane.SetOrigin(origin[0], origin[1], origin[2])
-        self.fea_clip_plane.SetNormal(normal[0], normal[1], normal[2])
-
-        for mapper in [self.fea_cortical_mapper, self.fea_cancellous_mapper, self.fea_implant_mapper]:
-            mapper.RemoveAllClippingPlanes()
-            mapper.AddClippingPlane(self.fea_clip_plane)
 

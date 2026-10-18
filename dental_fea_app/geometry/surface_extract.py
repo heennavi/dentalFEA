@@ -61,6 +61,16 @@ def mask_to_surface(
     # 0. 입력 데이터 정규화 및 vtkImageData 준비
     # -------------------------------------------------------------
     if isinstance(mask_data, np.ndarray):
+        if reference_vtk is not None:
+            if spacing is None:
+                spacing = reference_vtk.GetSpacing()
+            if origin is None:
+                origin = reference_vtk.GetOrigin()
+            if direction is None and hasattr(reference_vtk, "GetDirectionMatrix"):
+                dmat = reference_vtk.GetDirectionMatrix()
+                if dmat is not None:
+                    direction = tuple(dmat.GetElement(r, c) for r in range(3) for c in range(3))
+
         spc = spacing if spacing is not None else (1.0, 1.0, 1.0)
         org = origin if origin is not None else (0.0, 0.0, 0.0)
 
@@ -79,11 +89,15 @@ def mask_to_surface(
             # [ROI 경계 밀폐] ROI 경계면을 통과하는 마스크가 열린(Open) 상태가 되지 않도록
             # 6방향 경계에 1-복셀 0(배경) 패딩을 적용하여 자연스러운 Watertight 단면 캡핑을 생성합니다.
             sub_mask_padded = np.pad(sub_mask, 1, mode="constant", constant_values=0)
-            sub_origin = (
-                org[0] + (imin - 1) * spc[0],
-                org[1] + (jmin - 1) * spc[1],
-                org[2] + (kmin - 1) * spc[2],
-            )
+            
+            # 1-복셀 패딩을 감안하여 (imin - 1, jmin - 1, kmin - 1) 복셀 위치의 월드 좌표를 sub_origin으로 계산
+            delta_idx = np.array([imin - 1, jmin - 1, kmin - 1], dtype=np.float64)
+            if direction is not None and len(direction) == 9:
+                dir_mat = np.array(direction).reshape(3, 3)
+                sub_origin = tuple(np.array(org) + dir_mat @ (delta_idx * np.array(spc)))
+            else:
+                sub_origin = tuple(np.array(org) + delta_idx * np.array(spc))
+
             vtk_image = mask_to_vtk_image(
                 sub_mask_padded,
                 spacing=spc,
@@ -123,14 +137,24 @@ def mask_to_surface(
             sc = extracted.GetPointData().GetScalars()
             raw_arr = numpy_support.vtk_to_numpy(sc).reshape((e_dims[2], e_dims[1], e_dims[0]))
             padded_arr = np.pad(raw_arr, 1, mode="constant", constant_values=0)
-            spc = extracted.GetSpacing()
-            org = extracted.GetOrigin()
-            padded_org = (org[0] - spc[0], org[1] - spc[1], org[2] - spc[2])
+            spc = mask_data.GetSpacing()
+            org = mask_data.GetOrigin()
+
+            delta_idx = np.array([imin - 1, jmin - 1, kmin - 1], dtype=np.float64)
+            img_dir = None
+            if hasattr(mask_data, "GetDirectionMatrix") and mask_data.GetDirectionMatrix() is not None:
+                dmat = mask_data.GetDirectionMatrix()
+                dir_mat = np.array([[dmat.GetElement(r, c) for c in range(3)] for r in range(3)])
+                padded_org = tuple(np.array(org) + dir_mat @ (delta_idx * np.array(spc)))
+                img_dir = tuple(dmat.GetElement(r, c) for r in range(3) for c in range(3))
+            else:
+                padded_org = tuple(np.array(org) + delta_idx * np.array(spc))
 
             vtk_image = mask_to_vtk_image(
                 padded_arr,
                 spacing=spc,
                 origin=padded_org,
+                direction=img_dir,
                 foreground_value=255,
             )
         else:
@@ -252,12 +276,38 @@ def mask_to_surface(
     # Watertight 검사 및 구멍 메우기 시도
     if not mesh.is_watertight:
         try:
+            # 1. 비매니폴드 엣지(한 모서리에 3개 이상의 면이 인접) 검출 및 정리
+            edges_sorted = mesh.edges_sorted
+            edge_groups = trimesh.grouping.group_rows(edges_sorted, require_count=None)
+            edge_counts = np.array([len(g) for g in edge_groups])
+            bad_edge_indices = np.where(edge_counts > 2)[0]
+            if len(bad_edge_indices) > 0:
+                bad_faces = set()
+                for idx in bad_edge_indices:
+                    for edge_idx in edge_groups[idx]:
+                        bad_faces.add(edge_idx // 3)
+                keep_faces = [i for i in range(len(mesh.faces)) if i not in bad_faces]
+                if len(keep_faces) >= 4:
+                    mesh = mesh.submesh([keep_faces], append=True)
+                    mesh.process(validate=True)
+
             trimesh.repair.fix_winding(mesh)
             trimesh.repair.fill_holes(mesh, use_fan=True)
             trimesh.repair.fix_normals(mesh)
             trimesh.repair.fix_inversion(mesh)
+            mesh.process(validate=True)
         except Exception as e:
             warnings.warn(f"메쉬 구멍 메우기 중 예외 발생: {e}", UserWarning, stacklevel=2)
+
+        # 2단계: 여전히 열려있다면 stitch 후 fill_holes 재시도
+        if not mesh.is_watertight:
+            try:
+                trimesh.repair.stitch(mesh)
+                trimesh.repair.fill_holes(mesh, use_fan=True)
+                trimesh.repair.fix_normals(mesh)
+                mesh.process(validate=True)
+            except Exception:
+                pass
 
         if not mesh.is_watertight:
             warnings.warn(
@@ -437,3 +487,28 @@ def _vtk_polydata_to_trimesh(poly: vtk.vtkPolyData) -> trimesh.Trimesh:
         faces = np.array(faces_list, dtype=int)
 
     return trimesh.Trimesh(vertices=pts, faces=faces, process=True)
+
+
+def trimesh_to_vtk_polydata(mesh: trimesh.Trimesh) -> vtk.vtkPolyData:
+    """trimesh.Trimesh를 vtkPolyData로 변환합니다."""
+    poly = vtk.vtkPolyData()
+    if mesh is None or len(mesh.faces) == 0:
+        return poly
+
+    pts = vtk.vtkPoints()
+    pts.SetData(numpy_support.numpy_to_vtk(np.ascontiguousarray(mesh.vertices, dtype=np.float32), deep=True))
+    poly.SetPoints(pts)
+
+    cells = vtk.vtkCellArray()
+    conn = np.ascontiguousarray(mesh.faces.ravel(), dtype=np.int64)
+    vtk_id_arr = numpy_support.numpy_to_vtkIdTypeArray(conn, deep=True)
+    cells.SetData(3, vtk_id_arr)
+    poly.SetPolys(cells)
+
+    norm_filter = vtk.vtkPolyDataNormals()
+    norm_filter.SetInputData(poly)
+    norm_filter.ComputePointNormalsOn()
+    norm_filter.ComputeCellNormalsOff()
+    norm_filter.SplittingOff()
+    norm_filter.Update()
+    return norm_filter.GetOutput()

@@ -139,13 +139,14 @@ class TestGeometryUIAndExport(unittest.TestCase):
             self.assertIn("report", manifest)
             self.assertEqual(manifest["report"]["interface"]["cortical_contact_area_mm2"], 15.5)
 
-    def test_04_volume_viewer_fea_actor_and_clipping(self):
-        """VolumeViewerWindow에서 FeaGeometry를 수신하여 VTK 액터 및 클리핑 평면이 정상 작동하는지 확인"""
-        viewer = VolumeViewerWindow(self.state_mgr)
+    def test_04_fea_geometry_view_widget_and_clipping(self):
+        """메인 화면 우하단 FeaGeometryViewWidget에서 FeaGeometry 수신 및 클리핑 평면 연동 확인, 별도 3D 창 비표시 검증"""
+        from dental_fea_app.ui.geometry.fea_geometry_viewer import FeaGeometryViewWidget
+        viewer = FeaGeometryViewWidget(self.state_mgr)
 
-        self.assertTrue(hasattr(viewer, "fea_cortical_actor"))
-        self.assertTrue(hasattr(viewer, "fea_cancellous_actor"))
-        self.assertTrue(hasattr(viewer, "fea_implant_actor"))
+        self.assertTrue(hasattr(viewer, "cortical_actor"))
+        self.assertTrue(hasattr(viewer, "cancellous_actor"))
+        self.assertTrue(hasattr(viewer, "implant_actor"))
         self.assertTrue(hasattr(viewer, "fea_clip_plane"))
 
         # 기하 설정
@@ -154,16 +155,20 @@ class TestGeometryUIAndExport(unittest.TestCase):
 
         # 액터가 렌더러에 추가되었는지 확인
         actors = viewer.renderer.GetActors()
-        self.assertTrue(actors.IsItemPresent(viewer.fea_cortical_actor))
-        self.assertTrue(actors.IsItemPresent(viewer.fea_cancellous_actor))
-        self.assertTrue(actors.IsItemPresent(viewer.fea_implant_actor))
+        self.assertTrue(actors.IsItemPresent(viewer.cortical_actor))
+        self.assertTrue(actors.IsItemPresent(viewer.cancellous_actor))
+        self.assertTrue(actors.IsItemPresent(viewer.implant_actor))
 
         # 가시성 토글 테스트
         self.state_mgr.set_fea_visibility({"cortical": False, "cancellous": True, "implant": True})
-        self.assertEqual(viewer.fea_cortical_actor.GetVisibility(), 0)
-        self.assertEqual(viewer.fea_cancellous_actor.GetVisibility(), 1)
+        self.assertEqual(viewer.cortical_actor.GetVisibility(), 0)
+        self.assertEqual(viewer.cancellous_actor.GetVisibility(), 1)
 
         # 단면 클리핑 슬라이더 조절 테스트
         self.state_mgr.set_fea_clipping({"enabled": True, "axis": "Z", "value_pct": 50.0, "inverted": False})
         plane_normal = viewer.fea_clip_plane.GetNormal()
         self.assertEqual(plane_normal, (0.0, 0.0, 1.0))
+
+        # 기존 별도 3D 창(VolumeViewerWindow)에는 FEA 액터가 표시되지 않음을 확인
+        vol_viewer = VolumeViewerWindow(self.state_mgr)
+        self.assertFalse(hasattr(vol_viewer, "fea_cortical_actor"))

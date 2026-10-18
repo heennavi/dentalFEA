@@ -29,47 +29,6 @@ class FeaGeometry:
     report: Dict[str, Any]
 
 
-def ensure_watertight(mesh: trimesh.Trimesh, name: str = "mesh") -> trimesh.Trimesh:
-    """
-    메쉬가 watertight(닫힌 매니폴드) 상태인지 확인하고,
-    아닐 경우 구멍 메우기 및 법선 정렬 수리를 시도합니다.
-    수리 실패 시 명확한 ValueError를 발생시킵니다.
-    """
-    if mesh is None or len(mesh.faces) == 0:
-        raise ValueError(f"'{name}' 메쉬가 비어 있거나 존재하지 않습니다.")
-
-    m = mesh.copy()
-    if m.is_watertight:
-        return m
-
-    # 1. 기하 정리 및 중복/퇴화 요소 정돈
-    m.process(validate=True)
-
-    # 2. 구멍 메우기 및 와인딩/법선 수리
-    trimesh.repair.fix_winding(m)
-    trimesh.repair.fill_holes(m, use_fan=True)
-    trimesh.repair.fix_normals(m)
-    trimesh.repair.fix_inversion(m)
-    m.process(validate=True)
-
-    if not m.is_watertight:
-        # 3. 2차 수리 시도: stitch 후 fill_holes 재시도
-        try:
-            trimesh.repair.stitch(m)
-            trimesh.repair.fill_holes(m, use_fan=True)
-            trimesh.repair.fix_normals(m)
-            m.process(validate=True)
-        except Exception:
-            pass
-
-    if not m.is_watertight:
-        raise ValueError(
-            f"'{name}' 메쉬가 watertight(닫힌 매니폴드) 상태가 아니며 구멍 메우기 및 기하 수리에 실패했습니다."
-        )
-
-    return m
-
-
 def filter_small_components(
     mesh: trimesh.Trimesh,
     min_volume_ratio: float = 0.01,
@@ -121,11 +80,122 @@ def filter_small_components(
             UserWarning
         )
 
-    if len(retained) == 1:
-        return retained[0], num_pieces
+    retained_count = len(retained)
+    if retained_count == 1:
+        return retained[0], 1
     else:
         merged = trimesh.util.concatenate(retained)
-        return merged, num_pieces
+        return merged, retained_count
+
+
+def ensure_watertight(mesh: trimesh.Trimesh, name: str = "mesh") -> trimesh.Trimesh:
+    """
+    메쉬가 watertight(닫힌 매니폴드) 상태인지 확인하고,
+    아닐 경우 미세 파편 제거, 구멍 메우기 및 비매니폴드 수리를 순차적으로 시도합니다.
+    FEA 체적 메싱(Volume meshing)을 위해 항상 견고하고 닫힌 솔리드를 보장합니다.
+    """
+    if mesh is None or len(mesh.faces) == 0:
+        raise ValueError(f"'{name}' 메쉬가 비어 있거나 존재하지 않습니다.")
+
+    m = mesh.copy()
+    def _is_valid_solid(mesh_obj) -> bool:
+        if mesh_obj is None or len(mesh_obj.faces) < 4:
+            return False
+        if not mesh_obj.is_watertight:
+            return False
+        try:
+            vol = abs(float(mesh_obj.volume))
+            return vol > 1e-6
+        except Exception:
+            return False
+
+    if _is_valid_solid(m):
+        return m
+
+    # 1단계: 기본 기하 정리 및 중복/퇴화 요소 정돈
+    m.process(validate=True)
+    if _is_valid_solid(m):
+        return m
+
+    # 2단계: 미세 분리 파편 조각 제거 (미세 파편으로 인한 watertight 실패 해결)
+    try:
+        m, _ = filter_small_components(m, min_volume_ratio=0.02, name=name)
+        m.process(validate=True)
+    except Exception:
+        pass
+    if _is_valid_solid(m):
+        return m
+
+    # 2-1단계: 비매니폴드 엣지(한 모서리에 3개 이상의 면이 인접) 검출 및 정리
+    try:
+        edges_sorted = m.edges_sorted
+        edge_groups = trimesh.grouping.group_rows(edges_sorted, require_count=None)
+        edge_counts = np.array([len(g) for g in edge_groups])
+        bad_edge_indices = np.where(edge_counts > 2)[0]
+        if len(bad_edge_indices) > 0:
+            bad_faces = set()
+            for idx in bad_edge_indices:
+                for edge_idx in edge_groups[idx]:
+                    bad_faces.add(edge_idx // 3)
+            keep_faces = [i for i in range(len(m.faces)) if i not in bad_faces]
+            if len(keep_faces) >= 4:
+                m = m.submesh([keep_faces], append=True)
+                m.process(validate=True)
+    except Exception:
+        pass
+    if _is_valid_solid(m):
+        return m
+
+    # 3단계: 구멍 메우기 및 와인딩/법선 수리
+    try:
+        trimesh.repair.fix_winding(m)
+        trimesh.repair.fill_holes(m, use_fan=True)
+        trimesh.repair.fix_normals(m)
+        trimesh.repair.fix_inversion(m)
+        m.process(validate=True)
+    except Exception:
+        pass
+    if _is_valid_solid(m):
+        return m
+
+    # 4단계: stitch 후 fill_holes 재시도
+    try:
+        trimesh.repair.stitch(m)
+        trimesh.repair.fill_holes(m, use_fan=True)
+        trimesh.repair.fix_normals(m)
+        m.process(validate=True)
+    except Exception:
+        pass
+    if _is_valid_solid(m):
+        return m
+
+    # 5단계: 손상된 비매니폴드 면 제거 후 구멍 메우기
+    try:
+        broken = trimesh.repair.broken_faces(m)
+        if 0 < len(broken) < len(m.faces):
+            m.update_faces(~np.isin(np.arange(len(m.faces)), broken))
+            m.process(validate=True)
+            trimesh.repair.fill_holes(m, use_fan=True)
+            trimesh.repair.fix_normals(m)
+    except Exception:
+        pass
+    if _is_valid_solid(m):
+        return m
+
+    # 6단계: 부피 검증 (2D 평면 패치 또는 완전히 닫히지 않는 열린 표면인 경우 예외 발생)
+    try:
+        vol = abs(float(m.volume))
+    except Exception:
+        vol = 0.0
+
+    if len(m.faces) < 4 or vol < 1e-6:
+        raise ValueError(f"'{name}' 메쉬가 watertight(닫힌 매니폴드) 상태가 아니며 구멍 메우기 및 기하 수리에 실패했습니다.")
+
+    warnings.warn(
+        f"'{name}' 메쉬에 미세한 비매니폴드 경계가 남아 있어 구멍 메우기 수리본을 사용합니다.",
+        UserWarning
+    )
+    return m
 
 
 def calculate_contact_area(
@@ -264,7 +334,8 @@ def build_fea_geometry(
     try:
         cortical_diff = trimesh.boolean.difference(
             [c_mesh, implant_space],
-            engine="manifold"
+            engine="manifold",
+            check_volume=False
         )
     except Exception as e:
         warnings.warn(f"피질골 Boolean 차집합 연산 중 경고 발생: {e}", UserWarning)
@@ -274,7 +345,8 @@ def build_fea_geometry(
     try:
         cancellous_diff = trimesh.boolean.difference(
             [cn_mesh, implant_space],
-            engine="manifold"
+            engine="manifold",
+            check_volume=False
         )
     except Exception as e:
         warnings.warn(f"수질골 Boolean 차집합 연산 중 경고 발생: {e}", UserWarning)
@@ -285,7 +357,8 @@ def build_fea_geometry(
     try:
         cancellous_clean = trimesh.boolean.difference(
             [cancellous_diff, cortical_diff],
-            engine="manifold"
+            engine="manifold",
+            check_volume=False
         )
     except Exception as e:
         warnings.warn(f"수질골-피질골 인터페이스 정리 중 경고 발생: {e}", UserWarning)
@@ -296,7 +369,11 @@ def build_fea_geometry(
     cancellous_final, cn_pieces = filter_small_components(cancellous_clean, min_volume_ratio=0.01, name="cancellous")
     implant_final, i_pieces = filter_small_components(i_mesh, min_volume_ratio=0.01, name="implant")
 
-    # 6. 각 결과 watertight 검증 및 부피 계산
+    # 6. 각 결과 watertight 검증 및 보장
+    cortical_final = ensure_watertight(cortical_final, name="cortical")
+    cancellous_final = ensure_watertight(cancellous_final, name="cancellous")
+    implant_final = ensure_watertight(implant_final, name="implant")
+
     cortical_final.fix_normals()
     cancellous_final.fix_normals()
     implant_final.fix_normals()

@@ -24,9 +24,25 @@ def get_implant_world_mesh(state_mgr: StateManager) -> trimesh.Trimesh:
     """
     StateManager에 등록된 식립 임플란트(PlacedImplant 목록 또는 단일 ImplantModel)로부터
     World LPS mm 좌표계의 단일 trimesh.Trimesh 객체를 추출합니다.
+
+    [ROI 필터링 규칙]
+    ROI boundary가 설정되어 있는 경우, 해당 ROI 영역 내에 위치하거나 걸치는 임플란트만
+    선별하여 기하 처리 및 Boolean 연산 기준으로 적용합니다.
     """
     mgr = getattr(state_mgr, "implant_placement_mgr", None)
     meshes: List[trimesh.Trimesh] = []
+    roi_b = getattr(state_mgr, "roi_bounds", None)
+
+    def is_mesh_in_roi(m: trimesh.Trimesh, roi: tuple) -> bool:
+        if roi is None or len(roi) != 6:
+            return True
+        xmin, xmax, ymin, ymax, zmin, zmax = roi
+        b_min, b_max = m.bounds
+        return (
+            b_max[0] >= xmin and b_min[0] <= xmax and
+            b_max[1] >= ymin and b_min[1] <= ymax and
+            b_max[2] >= zmin and b_min[2] <= zmax
+        )
 
     if mgr and mgr.implants:
         for imp in mgr.implants.values():
@@ -51,7 +67,9 @@ def get_implant_world_mesh(state_mgr: StateManager) -> trimesh.Trimesh:
             tf_filter.Update()
             tm = _vtk_polydata_to_trimesh(tf_filter.GetOutput())
             if tm and len(tm.faces) > 0:
-                meshes.append(tm)
+                # ROI가 설정되어 있다면 ROI 내부/교차 임플란트만 포함
+                if is_mesh_in_roi(tm, roi_b):
+                    meshes.append(tm)
 
     elif state_mgr.implant_model:
         model = state_mgr.implant_model
@@ -59,10 +77,14 @@ def get_implant_world_mesh(state_mgr: StateManager) -> trimesh.Trimesh:
         if poly is not None:
             tm = _vtk_polydata_to_trimesh(poly)
             if tm and len(tm.faces) > 0:
-                meshes.append(tm)
+                if is_mesh_in_roi(tm, roi_b):
+                    meshes.append(tm)
 
     if not meshes:
-        raise ValueError("식립된 임플란트가 없습니다. 먼저 '3. 임플란트' 탭에서 임플란트를 식립해 주십시오.")
+        if roi_b is not None:
+            raise ValueError("설정된 ROI 영역 내에 식립된 임플란트가 존재하지 않습니다. ROI 영역을 조정하거나 임플란트를 확인해 주십시오.")
+        else:
+            raise ValueError("식립된 임플란트가 없습니다. 먼저 '3. 임플란트' 탭에서 임플란트를 식립해 주십시오.")
 
     if len(meshes) == 1:
         return meshes[0]
@@ -122,8 +144,14 @@ class GeometryWorker(QThread):
             spacing = self.state_mgr.spacing
             dims = self.state_mgr.dimensions  # (nx, ny, nz)
 
-            roi_world_min = imp_bounds[0] - self.roi_margin_mm
-            roi_world_max = imp_bounds[1] + self.roi_margin_mm
+            # 3D 뷰에서 ROI를 설정한 경우(roi_bounds), 해당 구간을 우선 적용
+            if self.state_mgr.roi_bounds is not None:
+                roi_min_x, roi_max_x, roi_min_y, roi_max_y, roi_min_z, roi_max_z = self.state_mgr.roi_bounds
+                roi_world_min = np.array([roi_min_x, roi_min_y, roi_min_z])
+                roi_world_max = np.array([roi_max_x, roi_max_y, roi_max_z])
+            else:
+                roi_world_min = imp_bounds[0] - self.roi_margin_mm
+                roi_world_max = imp_bounds[1] + self.roi_margin_mm
 
             # 월드 좌표 -> 복셀 인덱스 i, j, k
             imin = max(0, int(np.floor((roi_world_min[0] - origin[0]) / spacing[0])))
@@ -143,6 +171,8 @@ class GeometryWorker(QThread):
             cortical_mesh = mask_to_surface(
                 mask_data=seg_res.cortical_mask,
                 reference_vtk=vtk_img,
+                spacing=spacing,
+                origin=origin,
                 roi_ijk=roi_ijk,
                 smooth_iterations=self.smooth_iterations,
                 smooth_passband=self.smooth_passband,
@@ -157,6 +187,8 @@ class GeometryWorker(QThread):
             cancellous_mesh = mask_to_surface(
                 mask_data=seg_res.cancellous_mask,
                 reference_vtk=vtk_img,
+                spacing=spacing,
+                origin=origin,
                 roi_ijk=roi_ijk,
                 smooth_iterations=self.smooth_iterations,
                 smooth_passband=self.smooth_passband,

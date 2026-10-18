@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt
 
+import numpy as np
 from dental_fea_app.core.state_manager import StateManager
 from dental_fea_app.ui.segmentation.segmentation_worker import SegmentationWorker
 
@@ -245,10 +246,28 @@ class SegmentationPanel(QWidget):
         self.progress_bar.setValue(0)
         self.lbl_status.setText("분할 연산 시작...")
 
+        # 3D 뷰 등에서 설정된 ROI bounds가 있는 경우 해당 구간만 슬라이싱하여 분할 수행
+        roi_ijk = None
+        if self.state_mgr.roi_bounds is not None and self.state_mgr.vtk_image is not None:
+            r_min_x, r_max_x, r_min_y, r_max_y, r_min_z, r_max_z = self.state_mgr.roi_bounds
+            orig = self.state_mgr.origin
+            spc = self.state_mgr.spacing
+            dims = self.state_mgr.dimensions
+
+            imin = max(0, int(np.floor((r_min_x - orig[0]) / spc[0])))
+            imax = min(dims[0] - 1, int(np.ceil((r_max_x - orig[0]) / spc[0])))
+            jmin = max(0, int(np.floor((r_min_y - orig[1]) / spc[1])))
+            jmax = min(dims[1] - 1, int(np.ceil((r_max_y - orig[1]) / spc[1])))
+            kmin = max(0, int(np.floor((r_min_z - orig[2]) / spc[2])))
+            kmax = min(dims[2] - 1, int(np.ceil((r_max_z - orig[2]) / spc[2])))
+
+            roi_ijk = (imin, imax, jmin, jmax, kmin, kmax)
+
         # QThread 워커 생성 및 시작
         self.worker = SegmentationWorker(
             volume_data=self.state_mgr.vtk_image,
             params=params,
+            roi_ijk=roi_ijk,
             parent=self
         )
         self.worker.progress.connect(self._on_worker_progress)

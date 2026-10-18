@@ -461,17 +461,17 @@ class MPRContainer(QWidget):
         # 4번째 슬롯: 빈 프레임 (우하단)
         self.control_quadrant = self._create_control_quadrant()
 
-        # 상단 수평 스플리터 (Axial | Coronal)
+        # 상단 수평 스플리터 (Axial | 3D FEA Geometry)
         self.top_splitter = QSplitter(Qt.Orientation.Horizontal, self)
         self.top_splitter.addWidget(self.axial_panel)
-        self.top_splitter.addWidget(self.coronal_panel)
+        self.top_splitter.addWidget(self.control_quadrant)
         self.top_splitter.setOpaqueResize(True)
         self.top_splitter.setChildrenCollapsible(False)
 
-        # 하단 수평 스플리터 (Sagittal | Control Quadrant)
+        # 하단 수평 스플리터 (Coronal | Sagittal)
         self.bottom_splitter = QSplitter(Qt.Orientation.Horizontal, self)
+        self.bottom_splitter.addWidget(self.coronal_panel)
         self.bottom_splitter.addWidget(self.sagittal_panel)
-        self.bottom_splitter.addWidget(self.control_quadrant)
         self.bottom_splitter.setOpaqueResize(True)
         self.bottom_splitter.setChildrenCollapsible(False)
 
@@ -765,12 +765,11 @@ class MPRContainer(QWidget):
     def _create_control_quadrant(self) -> QWidget:
         """
         우하단 사분면 패널.
-        사용자 요청에 따라 내부 버튼 및 라벨 등 내용물을 모두 제거한 빈 검은색 패널을 제공합니다.
+        사용자 요청에 따라 FEA 기하(피질골, 수질골, 임플란트)를 3D로 보여주는 전용 뷰어를 제공합니다.
         """
-        container = QFrame(self)
-        container.setStyleSheet("background-color: #121214; border: 1px solid #282830; border-radius: 4px;")
-        container.setMinimumSize(100, 100)
-        return container
+        from dental_fea_app.ui.geometry.fea_geometry_viewer import FeaGeometryViewWidget
+        self.fea_viewer = FeaGeometryViewWidget(self.state_mgr, self)
+        return self.fea_viewer
 
     def render_all(self):
         """3개 2D MPR 위젯 렌더링"""
