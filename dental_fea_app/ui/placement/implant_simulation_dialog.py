@@ -236,6 +236,8 @@ class ImplantSimulationDialog(QDialog):
         if hasattr(self.placement_mgr, "state_mgr") and self.placement_mgr.state_mgr:
             self.placement_mgr.state_mgr.implant_selected.connect(self._on_external_implant_selected)
             self.placement_mgr.state_mgr.implant_transformed.connect(self._on_external_implant_transformed)
+            if hasattr(self.placement_mgr.state_mgr, "implants_updated"):
+                self.placement_mgr.state_mgr.implants_updated.connect(self.refresh_placed_implants_table)
 
         self.alignment_changed.connect(self._on_alignment_changed)
 

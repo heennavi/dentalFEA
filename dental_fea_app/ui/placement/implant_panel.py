@@ -70,62 +70,56 @@ class ImplantPanel(QWidget):
         layout.setContentsMargins(6, 6, 6, 6)
         layout.setSpacing(6)
 
-        # 0. 최상단: 임플란트 및 보철 시뮬레이션 버튼 (Crosshair 버튼과 동일 텍스트 크기 및 패딩)
+        # 1. STL 파일 불러오기 및 라이브러리 사양 그룹
+        stl_group = QGroupBox("임플란트 모델 / 사양", self)
+        stl_vbox = QVBoxLayout(stl_group)
+        stl_vbox.setContentsMargins(6, 8, 6, 6)
+        stl_vbox.setSpacing(6)
+
+        # 임플란트 및 보철 시뮬레이션 버튼 (그룹 내부로 이동, 텍스트 색상 검은색, 보통 글씨)
         btn_sim_box = QHBoxLayout()
         btn_sim_box.setContentsMargins(0, 0, 0, 0)
-        self.btn_sim_launch = QPushButton(" 임플란트 및 보철", self)
+        self.btn_sim_launch = QPushButton(" 임플란트 및 보철", stl_group)
         self.btn_sim_launch.setIcon(IconFactory.implant(size=14))
         self.btn_sim_launch.setIconSize(QSize(14, 14))
         self.btn_sim_launch.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
         self.btn_sim_launch.setToolTip("임플란트 식립 시뮬레이션 및 Abutment/보철물(Crown) 관리 창을 엽니다.")
         self.btn_sim_launch.setStyleSheet("""
             QPushButton {
-                background-color: #2c3848;
-                color: #61afef;
-                border: 1px solid #4d698e;
+                background-color: #e2e8f0;
+                color: #000000;
+                border: 1px solid #94a3b8;
                 border-radius: 4px;
                 padding: 4px 8px;
-                font-weight: bold;
+                font-weight: normal;
                 text-align: center;
             }
             QPushButton:hover {
-                background-color: #38485c;
-                border-color: #61afef;
-                color: #ffffff;
+                background-color: #ffffff;
+                border-color: #3b82f6;
+                color: #000000;
             }
             QPushButton:pressed {
-                background-color: #212c3a;
+                background-color: #cbd5e1;
             }
         """)
         self.btn_sim_launch.clicked.connect(self._open_simulation_dialog)
         btn_sim_box.addWidget(self.btn_sim_launch)
         btn_sim_box.addStretch()
-        layout.addLayout(btn_sim_box)
+        stl_vbox.addLayout(btn_sim_box)
 
-        # 1. STL 파일 불러오기 및 라이브러리 사양 그룹
-        stl_group = QGroupBox("임플란트 모델 / 사양", self)
-        stl_vbox = QVBoxLayout(stl_group)
-        stl_vbox.setContentsMargins(6, 6, 6, 6)
-        stl_vbox.setSpacing(4)
-
-        # 라이브러리 퀵 선택 콤보박스
-        quick_hbox = QHBoxLayout()
-        quick_hbox.addWidget(QLabel("규격:", stl_group))
-        self.combo_library = QComboBox(stl_group)
-        self.combo_library.addItem("직접 STL 불러오기 또는 선택")
-        self._load_library_presets()
-        self.combo_library.currentIndexChanged.connect(self._on_library_combo_changed)
-        quick_hbox.addWidget(self.combo_library, 1)
-        stl_vbox.addLayout(quick_hbox)
-
+        # 외부 STL 파일 불러오기 버튼 (폭을 글자 및 아이콘 크기에 맞추어 축소)
+        btn_stl_box = QHBoxLayout()
+        btn_stl_box.setContentsMargins(0, 0, 0, 0)
         self.btn_load_stl = QPushButton("📂 외부 STL 파일 불러오기...", stl_group)
+        self.btn_load_stl.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
         self.btn_load_stl.setStyleSheet("""
             QPushButton {
                 background-color: #21252b;
                 color: #abb2bf;
                 border: 1px solid #3c3c46;
                 border-radius: 4px;
-                padding: 4px;
+                padding: 4px 8px;
                 font-size: 11px;
             }
             QPushButton:hover {
@@ -134,7 +128,9 @@ class ImplantPanel(QWidget):
             }
         """)
         self.btn_load_stl.clicked.connect(self._load_stl_dialog)
-        stl_vbox.addWidget(self.btn_load_stl)
+        btn_stl_box.addWidget(self.btn_load_stl)
+        btn_stl_box.addStretch()
+        stl_vbox.addLayout(btn_stl_box)
 
         self.lbl_stl_name = QLabel("모델: (로드되지 않음)", stl_group)
         self.lbl_stl_name.setStyleSheet("color: #aaaaaa; font-size: 11px;")
@@ -146,6 +142,13 @@ class ImplantPanel(QWidget):
         stl_vbox.addWidget(self.lbl_stl_dim)
 
         layout.addWidget(stl_group)
+
+        # 하위 호환 및 테스트 유지를 위해 combo_library 인스턴스 보관 (UI에서는 숨김)
+        self.combo_library = QComboBox(self)
+        self.combo_library.hide()
+        self.combo_library.addItem("직접 STL 불러오기 또는 선택")
+        self._load_library_presets()
+        self.combo_library.currentIndexChanged.connect(self._on_library_combo_changed)
 
         # 2. 배치 및 식립축 그룹 제거 (사용자 요청에 따라 UI 레이아웃에서 제외)
         # 하위 호환 및 테스트 유지를 위해 위젯 인스턴스만 보관

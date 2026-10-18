@@ -182,6 +182,8 @@ class ImplantPlacementManager:
                 self._update_implant_transform(imp)
 
         self.update_2d_slice_contours(self.current_cursor)
+        if self.state_mgr and hasattr(self.state_mgr, "implants_updated"):
+            self.state_mgr.implants_updated.emit()
         return True
 
     def place_implant(self, spec: ImplantSpec, initial_position: Optional[Tuple[float, float, float]] = None, is_maxilla: bool = False, axial_pitch: float = 0.0, axial_roll: float = 0.0, custom_id: Optional[str] = None) -> str:
@@ -255,6 +257,8 @@ class ImplantPlacementManager:
         self._update_implant_transform(placed)
         self.select_implant(imp_id, multi_select=False)
         self.update_2d_slice_contours(self.current_cursor)
+        if self.state_mgr and hasattr(self.state_mgr, "implants_updated"):
+            self.state_mgr.implants_updated.emit()
         return imp_id
 
     def replace_implant(self, implant_id: str, new_spec: ImplantSpec) -> bool:
@@ -269,6 +273,8 @@ class ImplantPlacementManager:
             imp.actor_3d.GetMapper().SetInputData(poly)
         self._update_implant_transform(imp)
         self.update_2d_slice_contours(self.current_cursor)
+        if self.state_mgr and hasattr(self.state_mgr, "implants_updated"):
+            self.state_mgr.implants_updated.emit()
         return True
 
     def delete_implant(self, implant_id: str):
@@ -302,6 +308,13 @@ class ImplantPlacementManager:
                 self.renderer_3d.GetRenderWindow().Render()
             if self.state_mgr:
                 self.state_mgr.request_render_all()
+                if hasattr(self.state_mgr, "implants_updated"):
+                    self.state_mgr.implants_updated.emit()
+                if hasattr(self.state_mgr, "implant_selected"):
+                    if not self.selected_ids:
+                        self.state_mgr.implant_selected.emit("")
+                    else:
+                        self.state_mgr.implant_selected.emit(self.selected_ids[-1])
 
     def get_implant(self, implant_id: str) -> Optional[PlacedImplant]:
         """ID로 식립된 임플란트 인스턴스 반환"""
@@ -311,6 +324,11 @@ class ImplantPlacementManager:
         ids = list(self.implants.keys())
         for i_id in ids:
             self.delete_implant(i_id)
+        if self.state_mgr:
+            if hasattr(self.state_mgr, "implant_selected"):
+                self.state_mgr.implant_selected.emit("")
+            if hasattr(self.state_mgr, "implants_updated"):
+                self.state_mgr.implants_updated.emit()
 
     def to_dict(self) -> List[Dict[str, Any]]:
         """모든 식립된 임플란트 및 부착물(Abutment, Crown) 정보를 JSON 직렬화 가능한 형태로 반환"""
@@ -405,6 +423,8 @@ class ImplantPlacementManager:
             self.renderer_3d.GetRenderWindow().Render()
         if hasattr(self, "state_mgr") and self.state_mgr:
             self.state_mgr.request_render_all()
+            if hasattr(self.state_mgr, "implants_updated"):
+                self.state_mgr.implants_updated.emit()
 
     def select_implant(self, implant_id: Optional[str], multi_select: bool = False):
         if implant_id is None:

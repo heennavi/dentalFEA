@@ -35,14 +35,16 @@ class SegmentationPanel(QWidget):
         self.state_mgr.segmentation_result_changed.connect(self._on_segmentation_result_changed)
 
     def _init_ui(self):
+        from PySide6.QtWidgets import QSizePolicy
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setContentsMargins(2, 4, 2, 4)
         layout.setSpacing(6)
 
         # 1. 분할 파라미터 그룹
         param_group = QGroupBox("분할 설정 (Parameters)", self)
         param_layout = QVBoxLayout(param_group)
-        param_layout.setContentsMargins(6, 8, 6, 6)
+        param_layout.setContentsMargins(6, 6, 6, 6)
         param_layout.setSpacing(5)
 
         # 뼈 하한 임계값 (HU)
@@ -110,7 +112,7 @@ class SegmentationPanel(QWidget):
                 background-color: #1e3a5f;
                 color: #ffffff;
                 font-weight: bold;
-                padding: 6px;
+                padding: 6px 4px;
                 border-radius: 4px;
                 border: 1px solid #3878b2;
             }
@@ -145,7 +147,7 @@ class SegmentationPanel(QWidget):
         # 2. 오버레이 표시 제어 그룹
         view_group = QGroupBox("마스크 표시 (Overlay)", self)
         view_layout = QVBoxLayout(view_group)
-        view_layout.setContentsMargins(6, 8, 6, 6)
+        view_layout.setContentsMargins(6, 6, 6, 6)
         view_layout.setSpacing(4)
 
         # 피질골 체크박스 (빨강 색상 인디케이터)

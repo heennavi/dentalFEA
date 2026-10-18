@@ -197,6 +197,8 @@ class ControlPanel(QWidget):
                 font-weight: bold;
             }
         """)
+        tabs.tabBar().setExpanding(True)
+        tabs.tabBar().setDocumentMode(True)
 
         # 탭 1: Phase 1 영상 정보
         t1 = QWidget()

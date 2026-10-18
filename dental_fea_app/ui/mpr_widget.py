@@ -478,6 +478,8 @@ class MPRWidget(QWidget):
         self._update_overlays()
         self.render()
 
+    set_selected_measurement = set_selected_measure
+
     def _on_interaction_mode_changed(self, mode: str):
         self.interaction_mode = mode
         self._temp_angle_pts.clear()
@@ -1510,7 +1512,7 @@ class MPRWidget(QWidget):
                 if matched_measure >= 0:
                     if self.measure_dialog:
                         self.measure_dialog.table.selectRow(matched_measure)
-                    self.set_selected_measurement(matched_measure)
+                    self.set_selected_measure(matched_measure)
                     return
 
                 # 5) 빈 영역 클릭 시: 선택 해제 및 십자선 이동

@@ -39,6 +39,7 @@ class StateManager(QObject):
     implant_pose_changed = Signal(object)               # ImplantModel or None
     implant_selected = Signal(str)                      # implant_id (선택 해제 시 "")
     implant_transformed = Signal(str)                   # implant_id (2D/3D 기즈모 변환 동기화)
+    implants_updated = Signal()                         # 식립된 임플란트 목록 변경(추가/삭제/수정) 브로드캐스트
     render_all_requested = Signal()                     # 전역 렌더링 요청 Signal
 
     def __init__(self, parent: Optional[QObject] = None):
