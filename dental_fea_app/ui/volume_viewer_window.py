@@ -11,6 +11,7 @@ volume_viewer_window.py
 from typing import Optional
 import numpy as np
 import vtk
+from vtk.util import numpy_support
 from vtkmodules.qt.QVTKRenderWindowInteractor import QVTKRenderWindowInteractor
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -23,6 +24,31 @@ from PySide6.QtGui import QAction, QMouseEvent, QIcon, QColor
 from dental_fea_app.core.state_manager import StateManager
 from dental_fea_app.core.settings_manager import SettingsManager
 from dental_fea_app.ui.icons import IconFactory
+
+
+def trimesh_to_vtk_polydata(mesh) -> vtk.vtkPolyData:
+    """trimesh.Trimesh를 vtkPolyData로 변환합니다."""
+    poly = vtk.vtkPolyData()
+    if mesh is None or len(mesh.faces) == 0:
+        return poly
+
+    pts = vtk.vtkPoints()
+    pts.SetData(numpy_support.numpy_to_vtk(np.ascontiguousarray(mesh.vertices, dtype=np.float32), deep=True))
+    poly.SetPoints(pts)
+
+    cells = vtk.vtkCellArray()
+    conn = np.ascontiguousarray(mesh.faces.ravel(), dtype=np.int64)
+    vtk_id_arr = numpy_support.numpy_to_vtkIdTypeArray(conn, deep=True)
+    cells.SetData(3, vtk_id_arr)
+    poly.SetPolys(cells)
+
+    norm_filter = vtk.vtkPolyDataNormals()
+    norm_filter.SetInputData(poly)
+    norm_filter.ComputePointNormalsOn()
+    norm_filter.ComputeCellNormalsOff()
+    norm_filter.SplittingOff()
+    norm_filter.Update()
+    return norm_filter.GetOutput()
 
 
 class ClippingButton(QToolButton):
@@ -179,6 +205,15 @@ class VolumeViewerWindow(QMainWindow):
 
         self.state_mgr.implant_selected.connect(self._on_implant_selected_3d)
         self.state_mgr.implant_transformed.connect(self._on_implant_transformed_3d)
+
+        # FEA 기하 솔리드 액터 초기화 및 신호 연결
+        self._init_fea_geometry_actors()
+        self.state_mgr.fea_geometry_changed.connect(self._on_fea_geometry_changed)
+        self.state_mgr.fea_visibility_changed.connect(self._on_fea_visibility_changed)
+        self.state_mgr.fea_clipping_changed.connect(self._on_fea_clipping_changed)
+
+        if getattr(self.state_mgr, "fea_geometry", None):
+            self._on_fea_geometry_changed(self.state_mgr.fea_geometry)
 
         # 이미 선택된 임플란트가 있을 경우 기즈모 즉시 부착
         sel_imp = self.state_mgr.implant_placement_mgr.get_selected_implant()
@@ -1457,4 +1492,148 @@ class VolumeViewerWindow(QMainWindow):
         if self.implant_gizmo_3d.is_attached and active_id == implant_id:
             self.implant_gizmo_3d.update_transform()
         self.render()
+
+    def _init_fea_geometry_actors(self):
+        """FEA 기하 솔리드(피질골, 수질골, 임플란트) 3D 액터 및 단면 클리핑 파이프라인 초기화"""
+        self.fea_clip_plane = vtk.vtkPlane()
+        self.fea_clip_plane.SetOrigin(0.0, 0.0, 0.0)
+        self.fea_clip_plane.SetNormal(0.0, 0.0, 1.0)
+
+        # 1. 피질골 솔리드 (연갈색/핑크레드)
+        self.fea_cortical_mapper = vtk.vtkPolyDataMapper()
+        self.fea_cortical_actor = vtk.vtkActor()
+        self.fea_cortical_actor.SetMapper(self.fea_cortical_mapper)
+        self.fea_cortical_actor.GetProperty().SetColor(0.88, 0.42, 0.46)
+        self.fea_cortical_actor.GetProperty().SetOpacity(0.85)
+        self.fea_cortical_actor.GetProperty().SetSpecular(0.25)
+        self.fea_cortical_actor.GetProperty().SetSpecularPower(20.0)
+        self.fea_cortical_actor.SetVisibility(False)
+        self.renderer.AddActor(self.fea_cortical_actor)
+
+        # 2. 수질골 솔리드 (스카이블루)
+        self.fea_cancellous_mapper = vtk.vtkPolyDataMapper()
+        self.fea_cancellous_actor = vtk.vtkActor()
+        self.fea_cancellous_actor.SetMapper(self.fea_cancellous_mapper)
+        self.fea_cancellous_actor.GetProperty().SetColor(0.38, 0.69, 0.94)
+        self.fea_cancellous_actor.GetProperty().SetOpacity(0.85)
+        self.fea_cancellous_actor.GetProperty().SetSpecular(0.25)
+        self.fea_cancellous_actor.GetProperty().SetSpecularPower(20.0)
+        self.fea_cancellous_actor.SetVisibility(False)
+        self.renderer.AddActor(self.fea_cancellous_actor)
+
+        # 3. 임플란트 솔리드 (티타늄 골드)
+        self.fea_implant_mapper = vtk.vtkPolyDataMapper()
+        self.fea_implant_actor = vtk.vtkActor()
+        self.fea_implant_actor.SetMapper(self.fea_implant_mapper)
+        self.fea_implant_actor.GetProperty().SetColor(0.85, 0.65, 0.35)
+        self.fea_implant_actor.GetProperty().SetOpacity(1.0)
+        self.fea_implant_actor.GetProperty().SetSpecular(0.6)
+        self.fea_implant_actor.GetProperty().SetSpecularPower(40.0)
+        self.fea_implant_actor.SetVisibility(False)
+        self.renderer.AddActor(self.fea_implant_actor)
+
+        self._fea_bounds = None
+
+    def _on_fea_geometry_changed(self, fea_geom):
+        """FEA 기하 솔리드가 생성/갱신되었을 때 3D 표면 매핑"""
+        if fea_geom is None:
+            self.fea_cortical_actor.SetVisibility(False)
+            self.fea_cancellous_actor.SetVisibility(False)
+            self.fea_implant_actor.SetVisibility(False)
+            self.render()
+            return
+
+        poly_c = trimesh_to_vtk_polydata(fea_geom.cortical)
+        poly_cn = trimesh_to_vtk_polydata(fea_geom.cancellous)
+        poly_i = trimesh_to_vtk_polydata(fea_geom.implant)
+
+        self.fea_cortical_mapper.SetInputData(poly_c)
+        self.fea_cancellous_mapper.SetInputData(poly_cn)
+        self.fea_implant_mapper.SetInputData(poly_i)
+
+        all_bounds = []
+        for poly in [poly_c, poly_cn, poly_i]:
+            if poly.GetNumberOfPoints() > 0:
+                all_bounds.append(poly.GetBounds())
+        if all_bounds:
+            b_arr = np.array(all_bounds)
+            self._fea_bounds = (
+                float(b_arr[:, 0].min()), float(b_arr[:, 1].max()),
+                float(b_arr[:, 2].min()), float(b_arr[:, 3].max()),
+                float(b_arr[:, 4].min()), float(b_arr[:, 5].max()),
+            )
+
+        self._apply_fea_visibility()
+        self._apply_fea_clipping()
+        self.render()
+
+    def _on_fea_visibility_changed(self, vis: dict):
+        self._apply_fea_visibility()
+        self.render()
+
+    def _apply_fea_visibility(self):
+        geom = getattr(self.state_mgr, "fea_geometry", None)
+        if geom is None:
+            self.fea_cortical_actor.SetVisibility(False)
+            self.fea_cancellous_actor.SetVisibility(False)
+            self.fea_implant_actor.SetVisibility(False)
+            return
+
+        vis = self.state_mgr.fea_visibility
+        opacity = float(vis.get("opacity", 0.85))
+
+        self.fea_cortical_actor.SetVisibility(bool(vis.get("cortical", True)))
+        self.fea_cortical_actor.GetProperty().SetOpacity(opacity)
+
+        self.fea_cancellous_actor.SetVisibility(bool(vis.get("cancellous", True)))
+        self.fea_cancellous_actor.GetProperty().SetOpacity(opacity)
+
+        self.fea_implant_actor.SetVisibility(bool(vis.get("implant", True)))
+        self.fea_implant_actor.GetProperty().SetOpacity(1.0)
+
+    def _on_fea_clipping_changed(self, clip: dict):
+        self._apply_fea_clipping()
+        self.render()
+
+    def _apply_fea_clipping(self):
+        clip = getattr(self.state_mgr, "fea_clipping", None)
+        if clip is None or not clip.get("enabled", False):
+            self.fea_cortical_mapper.RemoveAllClippingPlanes()
+            self.fea_cancellous_mapper.RemoveAllClippingPlanes()
+            self.fea_implant_mapper.RemoveAllClippingPlanes()
+            return
+
+        axis = clip.get("axis", "Z")
+        pct = float(clip.get("value_pct", 50.0)) / 100.0
+        inverted = bool(clip.get("inverted", False))
+
+        bounds = self._fea_bounds or self.state_mgr.bounds
+        normal = [0.0, 0.0, 0.0]
+        origin = [0.0, 0.0, 0.0]
+
+        if axis == "X":
+            x_min, x_max = bounds[0], bounds[1]
+            origin[0] = x_min + (x_max - x_min) * pct
+            origin[1] = (bounds[2] + bounds[3]) / 2.0
+            origin[2] = (bounds[4] + bounds[5]) / 2.0
+            normal[0] = -1.0 if inverted else 1.0
+        elif axis == "Y":
+            y_min, y_max = bounds[2], bounds[3]
+            origin[0] = (bounds[0] + bounds[1]) / 2.0
+            origin[1] = y_min + (y_max - y_min) * pct
+            origin[2] = (bounds[4] + bounds[5]) / 2.0
+            normal[1] = -1.0 if inverted else 1.0
+        else:
+            z_min, z_max = bounds[4], bounds[5]
+            origin[0] = (bounds[0] + bounds[1]) / 2.0
+            origin[1] = (bounds[2] + bounds[3]) / 2.0
+            origin[2] = z_min + (z_max - z_min) * pct
+            normal[2] = -1.0 if inverted else 1.0
+
+        self.fea_clip_plane.SetOrigin(origin[0], origin[1], origin[2])
+        self.fea_clip_plane.SetNormal(normal[0], normal[1], normal[2])
+
+        for mapper in [self.fea_cortical_mapper, self.fea_cancellous_mapper, self.fea_implant_mapper]:
+            mapper.RemoveAllClippingPlanes()
+            mapper.AddClippingPlane(self.fea_clip_plane)
 

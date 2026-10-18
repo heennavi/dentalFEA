@@ -76,13 +76,16 @@ def mask_to_surface(
             kmax = max(kmin, min(nz - 1, int(kmax)))
 
             sub_mask = mask_data[kmin : kmax + 1, jmin : jmax + 1, imin : imax + 1]
+            # [ROI 경계 밀폐] ROI 경계면을 통과하는 마스크가 열린(Open) 상태가 되지 않도록
+            # 6방향 경계에 1-복셀 0(배경) 패딩을 적용하여 자연스러운 Watertight 단면 캡핑을 생성합니다.
+            sub_mask_padded = np.pad(sub_mask, 1, mode="constant", constant_values=0)
             sub_origin = (
-                org[0] + imin * spc[0],
-                org[1] + jmin * spc[1],
-                org[2] + kmin * spc[2],
+                org[0] + (imin - 1) * spc[0],
+                org[1] + (jmin - 1) * spc[1],
+                org[2] + (kmin - 1) * spc[2],
             )
             vtk_image = mask_to_vtk_image(
-                sub_mask,
+                sub_mask_padded,
                 spacing=spc,
                 origin=sub_origin,
                 direction=direction,
@@ -100,7 +103,7 @@ def mask_to_surface(
 
     elif isinstance(mask_data, vtk.vtkImageData):
         if roi_ijk is not None and len(roi_ijk) == 6:
-            # vtkExtractVOI 필터로 서브 볼륨 슬라이싱
+            # vtkExtractVOI 필터로 서브 볼륨 슬라이싱 후 numpy 패딩 변환
             dims = mask_data.GetDimensions()
             imin, imax, jmin, jmax, kmin, kmax = roi_ijk
             imin = max(0, min(dims[0] - 1, int(imin)))
@@ -114,7 +117,22 @@ def mask_to_surface(
             extract_voi.SetInputData(mask_data)
             extract_voi.SetVOI(imin, imax, jmin, jmax, kmin, kmax)
             extract_voi.Update()
-            vtk_image = extract_voi.GetOutput()
+            extracted = extract_voi.GetOutput()
+
+            e_dims = extracted.GetDimensions()
+            sc = extracted.GetPointData().GetScalars()
+            raw_arr = numpy_support.vtk_to_numpy(sc).reshape((e_dims[2], e_dims[1], e_dims[0]))
+            padded_arr = np.pad(raw_arr, 1, mode="constant", constant_values=0)
+            spc = extracted.GetSpacing()
+            org = extracted.GetOrigin()
+            padded_org = (org[0] - spc[0], org[1] - spc[1], org[2] - spc[2])
+
+            vtk_image = mask_to_vtk_image(
+                padded_arr,
+                spacing=spc,
+                origin=padded_org,
+                foreground_value=255,
+            )
         else:
             vtk_image = mask_data
     else:
@@ -234,7 +252,8 @@ def mask_to_surface(
     # Watertight 검사 및 구멍 메우기 시도
     if not mesh.is_watertight:
         try:
-            trimesh.repair.fill_holes(mesh)
+            trimesh.repair.fix_winding(mesh)
+            trimesh.repair.fill_holes(mesh, use_fan=True)
             trimesh.repair.fix_normals(mesh)
             trimesh.repair.fix_inversion(mesh)
         except Exception as e:

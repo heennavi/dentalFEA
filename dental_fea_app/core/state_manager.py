@@ -42,6 +42,11 @@ class StateManager(QObject):
     implants_updated = Signal()                         # 식립된 임플란트 목록 변경(추가/삭제/수정) 브로드캐스트
     render_all_requested = Signal()                     # 전역 렌더링 요청 Signal
 
+    # FEA 기하 처리(Geometry) Signals
+    fea_geometry_changed = Signal(object)               # FeaGeometry or None
+    fea_visibility_changed = Signal(dict)               # {'cortical': bool, 'cancellous': bool, 'implant': bool, 'opacity': float}
+    fea_clipping_changed = Signal(dict)                 # {'enabled': bool, 'axis': str, 'value_pct': float, 'inverted': bool}
+
     def __init__(self, parent: Optional[QObject] = None):
         super().__init__(parent)
 
@@ -82,6 +87,21 @@ class StateManager(QObject):
         self.implant_placement_mgr = ImplantPlacementManager()
         self.implant_placement_mgr.set_state_manager(self)
         self.coordinates_changed.connect(lambda x, y, z: self.implant_placement_mgr.update_2d_slice_contours((x, y, z)))
+
+        # FEA 기하(Geometry) 상태
+        self._fea_geometry = None
+        self._fea_visibility = {
+            "cortical": True,
+            "cancellous": True,
+            "implant": True,
+            "opacity": 0.85
+        }
+        self._fea_clipping = {
+            "enabled": False,
+            "axis": "Z",
+            "value_pct": 50.0,
+            "inverted": False
+        }
 
     @property
     def implant_model(self):
@@ -154,6 +174,31 @@ class StateManager(QObject):
     def set_roi_bounds(self, bounds: Optional[Tuple[float, float, float, float, float, float]]):
         self._roi_bounds = bounds
         self.roi_bounds_changed.emit(bounds)
+
+    # FEA 기하(Geometry) 프로퍼티 및 제어
+    @property
+    def fea_geometry(self):
+        return self._fea_geometry
+
+    def set_fea_geometry(self, geom):
+        self._fea_geometry = geom
+        self.fea_geometry_changed.emit(geom)
+
+    @property
+    def fea_visibility(self) -> dict:
+        return self._fea_visibility
+
+    def set_fea_visibility(self, vis: dict):
+        self._fea_visibility.update(vis)
+        self.fea_visibility_changed.emit(self._fea_visibility)
+
+    @property
+    def fea_clipping(self) -> dict:
+        return self._fea_clipping
+
+    def set_fea_clipping(self, clip: dict):
+        self._fea_clipping.update(clip)
+        self.fea_clipping_changed.emit(self._fea_clipping)
 
 
     # --- Property Getters ---
