@@ -1,0 +1,30 @@
+{
+  "density_from_hu": {
+    "type": "linear",
+    "a": 0.0,
+    "b": 0.001,
+    "unit": "g/cm3",
+    "description": "예시값(검증 필요). 환자 CT 및 팬텀 보정 계수로 교체할 것 (rho = a + b * HU)"
+  },
+  "modulus_from_density": {
+    "type": "power",
+    "c": 6850.0,
+    "d": 1.49,
+    "unit_out": "MPa",
+    "description": "예시값(검증 필요). 적용 대상 골 조직 및 논문 수식으로 교체할 것 (E = c * rho^d)"
+  },
+  "poisson_bone": 0.3,
+  "cortical_fixed": {
+    "E": 13700.0,
+    "nu": 0.3
+  },
+  "E_min": 10.0,
+  "E_max": 20000.0,
+  "n_bins": 30,
+  "binning_scale": "linear",
+  "titanium": {
+    "E": 110000.0,
+    "nu": 0.34,
+    "density": 4.5e-9
+  }
+}

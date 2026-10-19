@@ -2,14 +2,14 @@
   "mpr_views": {
     "Axial": {
       "show_crosshair": true,
-      "show_ruler": false,
+      "show_ruler": true,
       "rotation": 0,
       "flip_h": false,
       "flip_v": false
     },
     "Coronal": {
       "show_crosshair": true,
-      "show_ruler": false,
+      "show_ruler": true,
       "rotation": 0,
       "flip_h": false,
       "flip_v": false
@@ -23,9 +23,9 @@
     }
   },
   "volume_3d": {
-    "shading": true,
-    "opacity": 0.18,
-    "geometry": "01d9d0cb000300000000047f000000a300000816000003970000047f000000c8000008160000039700000000000000000d700000047f000000c80000081600000397"
+    "shading": false,
+    "opacity": 0.85,
+    "geometry": "01d9d0cb00030000000000010000001900000398000002e8000000010000001900000398000002e800000000000000000d70000000010000001900000398000002e8"
   },
   "window_level": {
     "window": 1500.0,
@@ -34,16 +34,16 @@
   },
   "mpr_container": {
     "v_sizes": [
-      666,
-      424
+      14,
+      14
     ],
     "h_sizes": [
-      465,
-      676
+      49,
+      49
     ]
   },
   "main_window": {
-    "geometry": "01d9d0cb00030000000007ae000000b000000d380000057f000007ae000000d500000d380000057f00000000000000000d70000007ae000000d500000d380000057f"
+    "geometry": "01d9d0cb00030000000007b30000005a00000c1200000365000007b30000005a00000c120000036500000000000000000d70000007b30000005a00000c1200000365"
   },
   "recent_files": [
     "/test/path/dir4",
