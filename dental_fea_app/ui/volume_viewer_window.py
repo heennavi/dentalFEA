@@ -206,7 +206,12 @@ class VolumeViewerWindow(QMainWindow):
         self.state_mgr.implant_selected.connect(self._on_implant_selected_3d)
         self.state_mgr.implant_transformed.connect(self._on_implant_transformed_3d)
 
-        # (FEA 기하 표시는 메인 화면 우측 하단 뷰어에 표시하므로 별도 3D 창에서는 비활성화)
+        # FEA 체적 메쉬 및 경계조건 액터
+        self.fea_mesh_actors = {}
+        self.fea_bc_actors = []
+        self.state_mgr.mesh_model_changed.connect(self._on_fea_mesh_model_changed)
+        self.state_mgr.bc_set_changed.connect(self._on_fea_bc_set_changed)
+
 
         # 이미 선택된 임플란트가 있을 경우 기즈모 즉시 부착
         sel_imp = self.state_mgr.implant_placement_mgr.get_selected_implant()
@@ -1759,6 +1764,105 @@ class VolumeViewerWindow(QMainWindow):
         if self.implant_gizmo_3d.is_attached and active_id == implant_id:
             self.implant_gizmo_3d.update_transform()
         self.render()
+
+    def _on_fea_mesh_model_changed(self, mesh_model):
+        """체적 메쉬 변경 시 3D 볼륨 창에 메쉬 표면 액터 표시"""
+        for act in self.fea_mesh_actors.values():
+            self.renderer.RemoveActor(act)
+        self.fea_mesh_actors.clear()
+
+        if mesh_model is None:
+            self.request_render()
+            return
+
+        from vtk.util import numpy_support
+        from meshing.surface_extractor import boundary_faces
+
+        for part in mesh_model.parts:
+            faces_nodes, _ = boundary_faces(part.elements, nodes=part.nodes)
+            if len(faces_nodes) == 0:
+                continue
+
+            poly = vtk.vtkPolyData()
+            pts = vtk.vtkPoints()
+            pts.SetData(numpy_support.numpy_to_vtk(np.ascontiguousarray(part.nodes, dtype=np.float32), deep=True))
+            poly.SetPoints(pts)
+
+            cells = vtk.vtkCellArray()
+            n_faces = len(faces_nodes)
+            cells_arr = np.empty((n_faces, 4), dtype=np.int64)
+            cells_arr[:, 0] = 3
+            cells_arr[:, 1:] = faces_nodes
+            vtk_id_arr = numpy_support.numpy_to_vtkIdTypeArray(np.ascontiguousarray(cells_arr.ravel()), deep=True)
+            cells.SetCells(n_faces, vtk_id_arr)
+            poly.SetPolys(cells)
+
+            mapper = vtk.vtkPolyDataMapper()
+            mapper.SetInputData(poly)
+
+            actor = vtk.vtkActor()
+            actor.SetMapper(mapper)
+            actor.GetProperty().EdgeVisibilityOn()
+            actor.GetProperty().SetEdgeColor(0.25, 0.25, 0.30)
+
+            if part.name == "implant":
+                actor.GetProperty().SetColor(0.92, 0.76, 0.38)
+                actor.GetProperty().SetOpacity(1.0)
+            else:
+                actor.GetProperty().SetColor(0.85, 0.82, 0.78)
+                actor.GetProperty().SetOpacity(0.85)
+
+            self.renderer.AddActor(actor)
+            self.fea_mesh_actors[part.name] = actor
+
+        self.request_render()
+
+    def _on_fea_bc_set_changed(self, bc_set):
+        """경계조건 변경 시 고정 절점(파란 점) 액터 표시"""
+        for act in self.fea_bc_actors:
+            self.renderer.RemoveActor(act)
+        self.fea_bc_actors.clear()
+
+        if bc_set is None:
+            self.request_render()
+            return
+
+        from vtk.util import numpy_support
+        mesh_model = getattr(self.state_mgr, "mesh_model", None)
+        if mesh_model is None:
+            return
+
+        all_fixed_coords = []
+        for fix in bc_set.fixed_node_sets:
+            p_name = fix.get("part", "")
+            part = mesh_model.get_part(p_name)
+            node_ids = fix.get("node_ids", np.array([], dtype=np.int64))
+            if part is not None and len(node_ids) > 0:
+                all_fixed_coords.append(part.nodes[node_ids])
+
+        if all_fixed_coords:
+            fixed_pts = np.vstack(all_fixed_coords)
+            poly_fixed = vtk.vtkPolyData()
+            pts = vtk.vtkPoints()
+            pts.SetData(numpy_support.numpy_to_vtk(np.ascontiguousarray(fixed_pts, dtype=np.float32), deep=True))
+            poly_fixed.SetPoints(pts)
+
+            glyph = vtk.vtkVertexGlyphFilter()
+            glyph.SetInputData(poly_fixed)
+            glyph.Update()
+
+            mapper_fix = vtk.vtkPolyDataMapper()
+            mapper_fix.SetInputConnection(glyph.GetOutputPort())
+
+            actor_fix = vtk.vtkActor()
+            actor_fix.SetMapper(mapper_fix)
+            actor_fix.GetProperty().SetColor(0.2, 0.55, 1.0)
+            actor_fix.GetProperty().SetPointSize(6.0)
+            self.renderer.AddActor(actor_fix)
+            self.fea_bc_actors.append(actor_fix)
+
+        self.request_render()
+
 
 
 

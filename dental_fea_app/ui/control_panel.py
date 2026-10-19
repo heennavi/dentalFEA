@@ -18,6 +18,8 @@ from dental_fea_app.imaging.dicom_reader import DicomReader
 from dental_fea_app.ui.segmentation.segmentation_panel import SegmentationPanel
 from dental_fea_app.ui.placement.implant_panel import ImplantPanel
 from dental_fea_app.ui.geometry.geometry_panel import GeometryPanel
+from dental_fea_app.ui.fea_panel import FeaPanel
+
 
 
 class ControlPanel(QWidget):
@@ -220,12 +222,10 @@ class ControlPanel(QWidget):
         self.geometry_panel = GeometryPanel(self.state_mgr, self)
         tabs.addTab(self.geometry_panel, "4. 기하 처리")
 
-        # 탭 5: Phase 3 FEA 해석 (준비)
-        t5 = QWidget()
-        t5_layout = QVBoxLayout(t5)
-        t5_layout.addWidget(QLabel("Phase 3: Gmsh 메쉬 생성 및\nCalculiX 유한요소해석(FEA) 연동", t5))
-        t5_layout.addStretch()
-        tabs.addTab(t5, "5. 해석")
+        # 탭 5: Phase 3 FEA 유한요소해석 패널
+        self.fea_panel = FeaPanel(self.state_mgr, self)
+        tabs.addTab(self.fea_panel, "5. 해석")
+
 
         # CT 이미지가 열리기 전에는 분할(1), 임플란트(2), 기하 처리(3), 해석(4) 비활성화
         tabs.setTabEnabled(1, False)

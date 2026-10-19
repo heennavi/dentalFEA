@@ -1,0 +1,510 @@
+"""
+fea_panel.py
+Left workflow control panel tab widget for Phase 3 FEA operations:
+1. Volume meshing (Gmsh C3D4/C3D10)
+2. Material assignment (Bone HU mapping & Titanium)
+3. Boundary conditions & occlusal loads
+4. CalculiX solver execution & real-time monitoring
+"""
+
+import os
+from typing import Optional, Dict, Any
+from PySide6.QtWidgets import (
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel,
+    QPushButton, QSpinBox, QDoubleSpinBox, QComboBox,
+    QProgressBar, QGroupBox, QSlider, QLineEdit,
+    QPlainTextEdit, QFileDialog, QMessageBox, QSizePolicy, QFrame
+)
+from PySide6.QtCore import Qt, Signal
+
+from dental_fea_app.core.state_manager import StateManager
+from fea.models import AnalysisConfig
+from fea.boundary_conditions import default_load_presets
+from dental_fea_app.ui.fea_controller import FeaController
+
+
+class FeaPanel(QWidget):
+    """FEA 파이프라인 제어 패널 위젯"""
+
+    def __init__(self, state_manager: StateManager, parent: Optional[QWidget] = None):
+        super().__init__(parent)
+        self.state_mgr = state_manager
+        self.controller = FeaController(state_manager, parent=self)
+
+        self._init_ui()
+        self._bind_signals()
+        self._update_ui_state()
+
+    def _init_ui(self):
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(2, 4, 2, 4)
+        layout.setSpacing(6)
+
+        # 0. 상류 데이터 변경 경고 배너 (평소 숨김)
+        self.banner_stale = QLabel("⚠️ 기하 형상이 변경되었습니다.\n메쉬를 다시 생성해야 합니다.", self)
+        self.banner_stale.setStyleSheet("""
+            background-color: #5c3818;
+            color: #e5c07b;
+            border: 1px solid #d19a66;
+            border-radius: 4px;
+            padding: 6px;
+            font-size: 11px;
+            font-weight: bold;
+        """)
+        self.banner_stale.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.banner_stale.setVisible(False)
+        layout.addWidget(self.banner_stale)
+
+        # 1. 메쉬 생성 섹션
+        group_mesh = QGroupBox("1. 메쉬 생성 (Meshing)", self)
+        vbox_mesh = QVBoxLayout(group_mesh)
+        vbox_mesh.setContentsMargins(6, 6, 6, 6)
+        vbox_mesh.setSpacing(4)
+
+        # 요소 차수 선택
+        row_elem = QHBoxLayout()
+        row_elem.addWidget(QLabel("요소 차수:", group_mesh))
+        self.combo_elem_type = QComboBox(group_mesh)
+        self.combo_elem_type.addItem("C3D10 (2차 10절점 고정밀)", "C3D10")
+        self.combo_elem_type.addItem("C3D4 (1차 4절점 미리보기)", "C3D4")
+        row_elem.addWidget(self.combo_elem_type)
+        vbox_mesh.addLayout(row_elem)
+
+        # 원거리 메쉬 크기
+        row_far = QHBoxLayout()
+        row_far.addWidget(QLabel("먼 영역 크기 (mm):", group_mesh))
+        self.spin_size_far = QDoubleSpinBox(group_mesh)
+        self.spin_size_far.setRange(0.5, 10.0)
+        self.spin_size_far.setValue(2.0)
+        self.spin_size_far.setSingleStep(0.2)
+        row_far.addWidget(self.spin_size_far)
+        vbox_mesh.addLayout(row_far)
+
+        # 임플란트 주변 메쉬 크기
+        row_near = QHBoxLayout()
+        row_near.addWidget(QLabel("임플란트 주변 (mm):", group_mesh))
+        self.spin_size_near = QDoubleSpinBox(group_mesh)
+        self.spin_size_near.setRange(0.1, 5.0)
+        self.spin_size_near.setValue(0.5)
+        self.spin_size_near.setSingleStep(0.1)
+        row_near.addWidget(self.spin_size_near)
+        vbox_mesh.addLayout(row_near)
+
+        # 메쉬 생성 버튼 및 진행바
+        self.btn_mesh = QPushButton("⚙️ 체적 메쉬 생성", group_mesh)
+        self.btn_mesh.setStyleSheet("font-weight: bold; padding: 5px;")
+        self.btn_mesh.clicked.connect(self._on_mesh_clicked)
+        vbox_mesh.addWidget(self.btn_mesh)
+
+        self.mesh_progress_bar = QProgressBar(group_mesh)
+        self.mesh_progress_bar.setRange(0, 100)
+        self.mesh_progress_bar.setValue(0)
+        self.mesh_progress_bar.setFixedHeight(14)
+        self.mesh_progress_bar.setTextVisible(False)
+        self.mesh_progress_bar.setVisible(False)
+        vbox_mesh.addWidget(self.mesh_progress_bar)
+
+        self.lbl_mesh_status = QLabel("대기 중", group_mesh)
+        self.lbl_mesh_status.setStyleSheet("color: #888899; font-size: 10px;")
+        vbox_mesh.addWidget(self.lbl_mesh_status)
+
+        self.lbl_mesh_summary = QLabel("절점: -- | 요소: --", group_mesh)
+        self.lbl_mesh_summary.setStyleSheet("color: #abb2bf; font-size: 11px; font-weight: bold;")
+        vbox_mesh.addWidget(self.lbl_mesh_summary)
+
+        layout.addWidget(group_mesh)
+
+        # 2. 물성 할당 섹션
+        group_mat = QGroupBox("2. 물성 할당 (Material)", self)
+        vbox_mat = QVBoxLayout(group_mat)
+        vbox_mat.setContentsMargins(6, 6, 6, 6)
+        vbox_mat.setSpacing(4)
+
+        # 프리셋 선택
+        row_preset = QHBoxLayout()
+        row_preset.addWidget(QLabel("프리셋:", group_mat))
+        self.lbl_preset_path = QLabel("기본 presets.json", group_mat)
+        self.lbl_preset_path.setStyleSheet("color: #61afef; font-size: 10px;")
+        self.btn_choose_preset = QPushButton("선택...", group_mat)
+        self.btn_choose_preset.setFixedWidth(50)
+        self.btn_choose_preset.clicked.connect(self._on_choose_preset)
+        row_preset.addWidget(self.lbl_preset_path, stretch=1)
+        row_preset.addWidget(self.btn_choose_preset)
+        vbox_mat.addLayout(row_preset)
+        self._custom_preset_path: Optional[str] = None
+
+        # Bin 개수
+        row_bins = QHBoxLayout()
+        row_bins.addWidget(QLabel("E 구간(Bin) 개수:", group_mat))
+        self.spin_bins = QSpinBox(group_mat)
+        self.spin_bins.setRange(5, 100)
+        self.spin_bins.setValue(30)
+        row_bins.addWidget(self.spin_bins)
+        vbox_mat.addLayout(row_bins)
+
+        # 물성 할당 버튼
+        self.btn_assign_material = QPushButton("🔬 물성 할당 실행", group_mat)
+        self.btn_assign_material.setStyleSheet("font-weight: bold; padding: 5px;")
+        self.btn_assign_material.clicked.connect(self._on_assign_material_clicked)
+        vbox_mat.addWidget(self.btn_assign_material)
+
+        self.lbl_mat_summary = QLabel("탄성계수(E): -- MPa\n할당 재료 수: --", group_mat)
+        self.lbl_mat_summary.setStyleSheet("color: #abb2bf; font-size: 10px;")
+        vbox_mat.addWidget(self.lbl_mat_summary)
+
+        layout.addWidget(group_mat)
+
+        # 3. 경계조건 및 하중 섹션
+        group_bc = QGroupBox("3. 경계조건 및 하중 (BC & Loads)", self)
+        vbox_bc = QVBoxLayout(group_bc)
+        vbox_bc.setContentsMargins(6, 6, 6, 6)
+        vbox_bc.setSpacing(4)
+
+        # 하단 고정면 Z
+        vbox_bc.addWidget(QLabel("하단 고정면 높이 Z (mm):", group_bc))
+        row_z = QHBoxLayout()
+        self.spin_fixed_z = QDoubleSpinBox(group_bc)
+        self.spin_fixed_z.setRange(-9999.0, 9999.0)
+        self.spin_fixed_z.setValue(0.0)
+        self.spin_fixed_z.setSingleStep(1.0)
+        self.btn_sync_z = QPushButton("현재 Z 복사", group_bc)
+        self.btn_sync_z.setToolTip("현재 2D 슬라이스 커서 Z 위치 복사")
+        self.btn_sync_z.clicked.connect(self._on_sync_current_z)
+        row_z.addWidget(self.spin_fixed_z)
+        row_z.addWidget(self.btn_sync_z)
+        vbox_bc.addLayout(row_z)
+
+        # 하중 프리셋
+        vbox_bc.addWidget(QLabel("교합 하중 프리셋:", group_bc))
+        self.combo_load_preset = QComboBox(group_bc)
+        self._load_presets = default_load_presets()
+        for k, v in self._load_presets.items():
+            self.combo_load_preset.addItem(v["name"], k)
+        self.combo_load_preset.currentIndexChanged.connect(self._on_load_preset_changed)
+        vbox_bc.addWidget(self.combo_load_preset)
+
+        # 하중 세부 크기 및 경사
+        row_load = QHBoxLayout()
+        row_load.addWidget(QLabel("크기(N):", group_bc))
+        self.spin_load_mag = QDoubleSpinBox(group_bc)
+        self.spin_load_mag.setRange(1.0, 2000.0)
+        self.spin_load_mag.setValue(100.0)
+        row_load.addWidget(self.spin_load_mag)
+
+        row_load.addWidget(QLabel("기울기(°):", group_bc))
+        self.spin_load_angle = QDoubleSpinBox(group_bc)
+        self.spin_load_angle.setRange(0.0, 90.0)
+        self.spin_load_angle.setValue(0.0)
+        row_load.addWidget(self.spin_load_angle)
+        vbox_bc.addLayout(row_load)
+
+        # 하중 적용 상단 마진
+        row_margin = QHBoxLayout()
+        row_margin.addWidget(QLabel("하중 적용 영역 (상단 mm):", group_bc))
+        self.spin_load_margin = QDoubleSpinBox(group_bc)
+        self.spin_load_margin.setRange(0.2, 10.0)
+        self.spin_load_margin.setValue(2.0)
+        row_margin.addWidget(self.spin_load_margin)
+        vbox_bc.addLayout(row_margin)
+
+        # 경계조건 검증 버튼
+        self.btn_validate_bc = QPushButton("✔️ 경계조건 적용 및 검증", group_bc)
+        self.btn_validate_bc.setStyleSheet("font-weight: bold; padding: 5px;")
+        self.btn_validate_bc.clicked.connect(self._on_setup_bc_clicked)
+        vbox_bc.addWidget(self.btn_validate_bc)
+
+        self.lbl_bc_status = QLabel("경계조건 미설정", group_bc)
+        self.lbl_bc_status.setStyleSheet("color: #888899; font-size: 10px;")
+        self.lbl_bc_status.setWordWrap(True)
+        vbox_bc.addWidget(self.lbl_bc_status)
+
+        layout.addWidget(group_bc)
+
+        # 4. 유한요소해석 섹션
+        group_solver = QGroupBox("4. CalculiX 해석 (Solver)", self)
+        vbox_solver = QVBoxLayout(group_solver)
+        vbox_solver.setContentsMargins(6, 6, 6, 6)
+        vbox_solver.setSpacing(4)
+
+        # ccx 경로
+        row_ccx = QHBoxLayout()
+        row_ccx.addWidget(QLabel("ccx 경로:", group_solver))
+        self.edit_ccx_path = QLineEdit(group_solver)
+        from solver.runner import CalculixRunner
+        dummy_runner = CalculixRunner()
+        detected_ccx = dummy_runner.resolve_ccx_path()
+        self.edit_ccx_path.setText(detected_ccx or "")
+        self.edit_ccx_path.setPlaceholderText("ccx 실행 경로 (기본 PATH 탐색)")
+        self.btn_browse_ccx = QPushButton("...", group_solver)
+        self.btn_browse_ccx.setFixedWidth(28)
+        self.btn_browse_ccx.clicked.connect(self._on_browse_ccx)
+        row_ccx.addWidget(self.edit_ccx_path)
+        row_ccx.addWidget(self.btn_browse_ccx)
+        vbox_solver.addLayout(row_ccx)
+
+        # 스레드 수
+        row_threads = QHBoxLayout()
+        row_threads.addWidget(QLabel("스레드 수:", group_solver))
+        self.spin_threads = QSpinBox(group_solver)
+        self.spin_threads.setRange(1, 64)
+        self.spin_threads.setValue(4)
+        row_threads.addWidget(self.spin_threads)
+        vbox_solver.addLayout(row_threads)
+
+        # 버튼들
+        row_btns = QHBoxLayout()
+        self.btn_export_inp = QPushButton("📄 .inp 저장", group_solver)
+        self.btn_export_inp.clicked.connect(self._on_export_inp_clicked)
+        row_btns.addWidget(self.btn_export_inp)
+
+        self.btn_run_solver = QPushButton("▶ 해석 실행", group_solver)
+        self.btn_run_solver.setStyleSheet("background-color: #1e3a5f; border-color: #3878b2; font-weight: bold;")
+        self.btn_run_solver.clicked.connect(self._on_run_solver_clicked)
+        row_btns.addWidget(self.btn_run_solver)
+
+        self.btn_cancel_solver = QPushButton("⏹ 취소", group_solver)
+        self.btn_cancel_solver.setEnabled(False)
+        self.btn_cancel_solver.clicked.connect(self._on_cancel_solver_clicked)
+        row_btns.addWidget(self.btn_cancel_solver)
+        vbox_solver.addLayout(row_btns)
+
+        # 진행바
+        self.solver_progress_bar = QProgressBar(group_solver)
+        self.solver_progress_bar.setRange(0, 100)
+        self.solver_progress_bar.setValue(0)
+        self.solver_progress_bar.setFixedHeight(14)
+        self.solver_progress_bar.setTextVisible(False)
+        vbox_solver.addWidget(self.solver_progress_bar)
+
+        self.lbl_solver_status = QLabel("해석 준비", group_solver)
+        self.lbl_solver_status.setStyleSheet("color: #888899; font-size: 10px;")
+        vbox_solver.addWidget(self.lbl_solver_status)
+
+        # 로그창
+        self.txt_solver_log = QPlainTextEdit(group_solver)
+        self.txt_solver_log.setReadOnly(True)
+        self.txt_solver_log.setMaximumHeight(90)
+        self.txt_solver_log.setStyleSheet("background-color: #1a1a1f; color: #abb2bf; font-family: monospace; font-size: 9px;")
+        vbox_solver.addWidget(self.txt_solver_log)
+
+        layout.addWidget(group_solver)
+        layout.addStretch()
+
+    def _bind_signals(self):
+        # StateManager 신호
+        self.state_mgr.fea_geometry_changed.connect(lambda *_: self._update_ui_state())
+        self.state_mgr.mesh_model_changed.connect(lambda *_: self._update_ui_state())
+        self.state_mgr.material_assignment_changed.connect(lambda *_: self._update_ui_state())
+        self.state_mgr.bc_set_changed.connect(lambda *_: self._update_ui_state())
+        self.state_mgr.fea_stale_changed.connect(self._on_stale_changed)
+
+        # FeaController 신호
+        self.controller.meshing_progress.connect(self._on_mesh_progress)
+        self.controller.meshing_finished.connect(self._on_mesh_finished)
+        self.controller.meshing_error.connect(self._on_mesh_error)
+
+        self.controller.material_assigned.connect(self._on_mat_assigned)
+        self.controller.material_error.connect(self._on_mat_error)
+
+        self.controller.bc_validated.connect(self._on_bc_validated)
+        self.controller.bc_error.connect(self._on_bc_error)
+
+        self.controller.solver_started.connect(self._on_solver_started)
+        self.controller.solver_progress.connect(self._on_solver_progress)
+        self.controller.solver_log.connect(self._on_solver_log)
+        self.controller.solver_finished.connect(self._on_solver_finished)
+        self.controller.solver_error.connect(self._on_solver_error)
+
+    def _update_ui_state(self):
+        """기하, 메쉬, 물성, BC 상태에 따라 버튼 활성/비활성화 제어"""
+        has_geom = (self.state_mgr.fea_geometry is not None)
+        has_mesh = (self.state_mgr.mesh_model is not None)
+        has_mat = (self.state_mgr.material_assignment is not None)
+        has_bc = (self.state_mgr.bc_set is not None)
+
+        self.btn_mesh.setEnabled(has_geom)
+        self.btn_assign_material.setEnabled(has_mesh)
+        self.btn_validate_bc.setEnabled(has_mesh)
+        self.btn_export_inp.setEnabled(has_mesh and has_mat and has_bc)
+        self.btn_run_solver.setEnabled(has_mesh and has_mat and has_bc)
+
+        # 초기 고정면 Z 기본값 설정 (볼륨 또는 지오메트리 바운드 기준)
+        if has_geom and self.spin_fixed_z.value() == 0.0:
+            bounds = getattr(self.state_mgr, "bounds", None)
+            if bounds and len(bounds) == 6:
+                z_min = bounds[4]
+                self.spin_fixed_z.setValue(z_min + 2.0)
+
+    def _on_stale_changed(self, is_stale: bool):
+        self.banner_stale.setVisible(is_stale)
+        if is_stale:
+            self.lbl_mesh_status.setText("⚠️ 상류 지오메트리가 변경됨 (재생성 권장)")
+            self.lbl_mesh_status.setStyleSheet("color: #e5c07b; font-size: 10px;")
+
+    # --- 메쉬 슬롯 ---
+    def _on_mesh_clicked(self):
+        elem_type = self.combo_elem_type.currentData()
+        config = AnalysisConfig(
+            mesh_size_far_mm=self.spin_size_far.value(),
+            mesh_size_near_mm=self.spin_size_near.value(),
+            element_type=elem_type,
+            ccx_path=self.edit_ccx_path.text() or None,
+            n_threads=self.spin_threads.value(),
+        )
+        self.btn_mesh.setEnabled(False)
+        self.mesh_progress_bar.setVisible(True)
+        self.mesh_progress_bar.setValue(0)
+        self.lbl_mesh_status.setText("메쉬 생성 시작...")
+        self.controller.start_meshing(config)
+
+    def _on_mesh_progress(self, pct: int, msg: str):
+        self.mesh_progress_bar.setValue(pct)
+        self.lbl_mesh_status.setText(msg)
+
+    def _on_mesh_finished(self, report_str: str):
+        self.mesh_progress_bar.setVisible(False)
+        self.btn_mesh.setEnabled(True)
+        self.lbl_mesh_status.setText("✅ 메쉬 생성 성공")
+        self.lbl_mesh_status.setStyleSheet("color: #98c379; font-size: 10px;")
+
+        mesh = self.state_mgr.mesh_model
+        if mesh:
+            self.lbl_mesh_summary.setText(f"절점: {mesh.total_nodes():,}개 | 요소: {mesh.total_elements():,}개")
+        self.banner_stale.setVisible(False)
+        self._update_ui_state()
+
+    def _on_mesh_error(self, err_msg: str):
+        self.mesh_progress_bar.setVisible(False)
+        self.btn_mesh.setEnabled(True)
+        self.lbl_mesh_status.setText("❌ 메쉬 생성 오류")
+        self.lbl_mesh_status.setStyleSheet("color: #e06c75; font-size: 10px;")
+        QMessageBox.critical(self, "메쉬 오류", err_msg)
+
+    # --- 물성 슬롯 ---
+    def _on_choose_preset(self):
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "물성 매핑 프리셋 JSON 선택", "", "JSON 파일 (*.json);;모든 파일 (*.*)"
+        )
+        if file_path:
+            self._custom_preset_path = file_path
+            self.lbl_preset_path.setText(os.path.basename(file_path))
+
+    def _on_assign_material_clicked(self):
+        self.btn_assign_material.setEnabled(False)
+        self.lbl_mat_summary.setText("물성 샘플링 및 Binning 계산 중...")
+        self.controller.assign_materials(
+            preset_path=self._custom_preset_path,
+            n_bins=self.spin_bins.value(),
+        )
+
+    def _on_mat_assigned(self, summary: dict):
+        self.btn_assign_material.setEnabled(True)
+        e_min = summary.get("e_min", 0.0)
+        e_max = summary.get("e_max", 0.0)
+        e_mean = summary.get("e_mean", 0.0)
+        n_mats = summary.get("num_materials", 0)
+        self.lbl_mat_summary.setText(
+            f"탄성계수(E): {e_min:.0f} ~ {e_max:.0f} MPa (평균 {e_mean:.0f} MPa)\n"
+            f"생성된 재료 수: {n_mats}개 (CORTICAL, TITANIUM 포함)"
+        )
+        self._update_ui_state()
+
+    def _on_mat_error(self, err_msg: str):
+        self.btn_assign_material.setEnabled(True)
+        self.lbl_mat_summary.setText(f"❌ 오류: {err_msg}")
+        QMessageBox.warning(self, "물성 할당 오류", err_msg)
+
+    # --- 경계조건 슬롯 ---
+    def _on_sync_current_z(self):
+        curr_z = self.state_mgr.current_coords[2]
+        self.spin_fixed_z.setValue(curr_z)
+
+    def _on_load_preset_changed(self):
+        key = self.combo_load_preset.currentData()
+        if key in self._load_presets:
+            p = self._load_presets[key]
+            self.spin_load_mag.setValue(p["magnitude_N"])
+            self.spin_load_angle.setValue(p["tilt_deg"])
+
+    def _on_setup_bc_clicked(self):
+        issues = self.controller.setup_boundary_conditions(
+            bottom_z=self.spin_fixed_z.value(),
+            load_preset_key=self.combo_load_preset.currentData(),
+            load_mag=self.spin_load_mag.value(),
+            load_angle=self.spin_load_angle.value(),
+            top_margin_mm=self.spin_load_margin.value(),
+        )
+
+    def _on_bc_validated(self, issues: list):
+        if not issues:
+            self.lbl_bc_status.setText("✅ 경계조건 및 하중 검증 통과")
+            self.lbl_bc_status.setStyleSheet("color: #98c379; font-size: 10px;")
+        else:
+            txt = "\n".join(issues)
+            self.lbl_bc_status.setText(f"⚠️ 검증 주의사항:\n{txt}")
+            self.lbl_bc_status.setStyleSheet("color: #e5c07b; font-size: 10px;")
+        self._update_ui_state()
+
+    def _on_bc_error(self, err_msg: str):
+        self.lbl_bc_status.setText(f"❌ 설정 오류: {err_msg}")
+        self.lbl_bc_status.setStyleSheet("color: #e06c75; font-size: 10px;")
+        QMessageBox.warning(self, "경계조건 오류", err_msg)
+
+    # --- 해석 슬롯 ---
+    def _on_browse_ccx(self):
+        file_path, _ = QFileDialog.getOpenFileName(self, "CalculiX(ccx) 실행 파일 선택", "", "모든 파일 (*)")
+        if file_path:
+            self.edit_ccx_path.setText(file_path)
+
+    def _on_export_inp_clicked(self):
+        file_path, _ = QFileDialog.getSaveFileName(self, "CalculiX .inp 저장", "dental_fea_job.inp", "CalculiX Deck (*.inp)")
+        if file_path:
+            out = self.controller.export_inp(file_path)
+            if out:
+                QMessageBox.information(self, ".inp 저장 완료", f"입력 데크 파일이 성공적으로 생성되었습니다:\n{out}")
+
+    def _on_run_solver_clicked(self):
+        self.txt_solver_log.clear()
+        self.solver_progress_bar.setValue(0)
+        ccx = self.edit_ccx_path.text().strip() or None
+        self.controller.start_solver(
+            inp_path=None,  # 기본 saved/ 폴더에 자동 생성
+            ccx_path=ccx,
+            n_threads=self.spin_threads.value(),
+        )
+
+    def _on_cancel_solver_clicked(self):
+        self.controller.cancel_solver()
+
+    def _on_solver_started(self):
+        self.btn_run_solver.setEnabled(False)
+        self.btn_cancel_solver.setEnabled(True)
+        self.lbl_solver_status.setText("해석 진행 중...")
+        self.lbl_solver_status.setStyleSheet("color: #61afef; font-size: 10px;")
+
+    def _on_solver_progress(self, pct: int, msg: str):
+        self.solver_progress_bar.setValue(pct)
+        self.lbl_solver_status.setText(msg)
+
+    def _on_solver_log(self, line: str):
+        self.txt_solver_log.appendPlainText(line)
+
+    def _on_solver_finished(self, success: bool, frd_path: str, msg: str):
+        self.btn_run_solver.setEnabled(True)
+        self.btn_cancel_solver.setEnabled(False)
+        if success:
+            self.lbl_solver_status.setText("✅ 해석 완료 (.frd 생성)")
+            self.lbl_solver_status.setStyleSheet("color: #98c379; font-size: 10px;")
+            QMessageBox.information(self, "해석 완료", f"CalculiX 정적 해석이 완료되었습니다.\n결과 파일: {frd_path}")
+        else:
+            self.lbl_solver_status.setText("❌ 해석 실패")
+            self.lbl_solver_status.setStyleSheet("color: #e06c75; font-size: 10px;")
+            QMessageBox.critical(self, "해석 실패", f"해석 중 오류가 발생했습니다:\n{msg}")
+
+    def _on_solver_error(self, err_msg: str):
+        self.btn_run_solver.setEnabled(True)
+        self.btn_cancel_solver.setEnabled(False)
+        self.lbl_solver_status.setText("❌ 실행 오류")
+        self.lbl_solver_status.setStyleSheet("color: #e06c75; font-size: 10px;")
+        QMessageBox.warning(self, "솔버 오류", err_msg)

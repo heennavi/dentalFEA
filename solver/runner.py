@@ -56,6 +56,11 @@ class CalculixRunner(QObject):
         self._is_cancelled: bool = False
         self._is_finished_emitted: bool = False
 
+    @property
+    def is_running(self) -> bool:
+        """Check whether solver process is currently executing."""
+        return self._process is not None and self._process.state() != QProcess.ProcessState.NotRunning
+
     def resolve_ccx_path(self) -> Optional[str]:
         """
         Resolve ccx executable path following priority:

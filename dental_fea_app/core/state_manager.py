@@ -47,6 +47,15 @@ class StateManager(QObject):
     fea_visibility_changed = Signal(dict)               # {'cortical': bool, 'cancellous': bool, 'implant': bool, 'opacity': float}
     fea_clipping_changed = Signal(dict)                 # {'enabled': bool, 'axis': str, 'value_pct': float, 'inverted': bool}
 
+    # Phase 3 FEA 파이프라인 Signals
+    mesh_model_changed = Signal(object)                 # MeshModel or None
+    material_assignment_changed = Signal(object)        # MaterialAssignment or None
+    bc_set_changed = Signal(object)                     # BoundaryConditionSet or None
+    ties_changed = Signal(object)                       # List[TieDef]
+    last_frd_path_changed = Signal(str)                 # str (.frd path)
+    fea_stale_changed = Signal(bool)                    # True if upstream geometry changed
+
+
     def __init__(self, parent: Optional[QObject] = None):
         super().__init__(parent)
 
@@ -102,6 +111,22 @@ class StateManager(QObject):
             "value_pct": 50.0,
             "inverted": False
         }
+
+        # Phase 3 FEA 파이프라인 상태
+        self._mesh_model = None
+        self._material_assignment = None
+        self._bc_set = None
+        self._ties = []
+        self._last_frd_path: Optional[str] = None
+        self._fea_is_stale: bool = False
+
+        # 상류 데이터 변경 시 FEA 무효화 연결
+        self.implant_pose_changed.connect(lambda *_: self.invalidate_fea_pipeline())
+        self.implant_transformed.connect(lambda *_: self.invalidate_fea_pipeline())
+        self.implants_updated.connect(lambda: self.invalidate_fea_pipeline())
+        self.segmentation_result_changed.connect(lambda *_: self.invalidate_fea_pipeline())
+        self.fea_geometry_changed.connect(lambda *_: self.invalidate_fea_pipeline())
+
 
     @property
     def implant_model(self):
@@ -201,7 +226,67 @@ class StateManager(QObject):
         self.fea_clipping_changed.emit(self._fea_clipping)
 
 
+    # Phase 3 FEA 파이프라인 프로퍼티 및 제어
+    @property
+    def mesh_model(self):
+        return self._mesh_model
+
+    def set_mesh_model(self, model):
+        self._mesh_model = model
+        if model is not None:
+            self._fea_is_stale = False
+            self.fea_stale_changed.emit(False)
+        self.mesh_model_changed.emit(self._mesh_model)
+
+    @property
+    def material_assignment(self):
+        return self._material_assignment
+
+    def set_material_assignment(self, mat_assign):
+        self._material_assignment = mat_assign
+        self.material_assignment_changed.emit(self._material_assignment)
+
+    @property
+    def bc_set(self):
+        return self._bc_set
+
+    def set_bc_set(self, bc):
+        self._bc_set = bc
+        self.bc_set_changed.emit(self._bc_set)
+
+    @property
+    def ties(self):
+        return self._ties
+
+    def set_ties(self, ties_list):
+        self._ties = ties_list or []
+        self.ties_changed.emit(self._ties)
+
+    @property
+    def last_frd_path(self) -> Optional[str]:
+        return self._last_frd_path
+
+    def set_last_frd_path(self, path: Optional[str]):
+        self._last_frd_path = path
+        self.last_frd_path_changed.emit(self._last_frd_path or "")
+
+    @property
+    def fea_is_stale(self) -> bool:
+        return self._fea_is_stale
+
+    def set_fea_stale(self, stale: bool):
+        self._fea_is_stale = bool(stale)
+        self.fea_stale_changed.emit(self._fea_is_stale)
+
+    def invalidate_fea_pipeline(self):
+        """상류 지오메트리/임플란트/분할 변경 시 FEA 파이프라인 무효화"""
+        if self._mesh_model is not None or self._material_assignment is not None or self._bc_set is not None:
+            self._fea_is_stale = True
+            self.fea_stale_changed.emit(True)
+
+
     # --- Property Getters ---
+
     @property
     def current_coords(self) -> Tuple[float, float, float]:
         return (self._current_x, self._current_y, self._current_z)

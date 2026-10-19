@@ -131,14 +131,22 @@ class FeaGeometryViewWidget(QWidget):
         self.state_mgr.fea_geometry_changed.connect(self._on_fea_geometry_changed)
         self.state_mgr.fea_visibility_changed.connect(self._on_fea_visibility_changed)
         self.state_mgr.fea_clipping_changed.connect(self._on_fea_clipping_changed)
+        self.state_mgr.mesh_model_changed.connect(self._on_mesh_model_changed)
+        self.state_mgr.material_assignment_changed.connect(self._on_material_assignment_changed)
+        self.state_mgr.bc_set_changed.connect(self._on_bc_set_changed)
 
         # 이미 생성된 기하가 있을 경우 즉시 표시
         geom = getattr(self.state_mgr, "fea_geometry", None)
         if geom is not None:
             self._on_fea_geometry_changed(geom)
 
+        mesh_model = getattr(self.state_mgr, "mesh_model", None)
+        if mesh_model is not None:
+            self._on_mesh_model_changed(mesh_model)
+
         self.vtkWidget.Initialize()
         self.vtkWidget.Start()
+
 
     def _init_actors(self):
         """피질골, 수질골, 임플란트 3개 액터 및 단면 클리핑 평면 생성"""
@@ -178,6 +186,12 @@ class FeaGeometryViewWidget(QWidget):
         self.implant_actor.GetProperty().SetSpecularPower(40.0)
         self.implant_actor.SetVisibility(False)
         self.renderer.AddActor(self.implant_actor)
+
+        # 4. 체적 메쉬 표면 액터 및 경계조건 글리프 액터
+        self.mesh_actors = {}
+        self.mesh_mappers = {}
+        self.bc_actors = []
+
 
     def _on_fea_geometry_changed(self, fea_geom: Optional[FeaGeometry]):
         """FEA 기하 솔리드가 생성/갱신되었을 때 매핑 및 카메라 리셋"""
@@ -301,3 +315,220 @@ class FeaGeometryViewWidget(QWidget):
         rw = self.vtkWidget.GetRenderWindow()
         if rw:
             rw.Render()
+
+    # --- Phase 3 FEA 파이프라인 시각화 슬롯 ---
+
+    def _on_mesh_model_changed(self, mesh_model):
+        """체적 메쉬 생성 시 표면 추출 및 메쉬 와이어프레임 액터 표시"""
+        # 기존 메쉬 액터 제거
+        for act in self.mesh_actors.values():
+            self.renderer.RemoveActor(act)
+        self.mesh_actors.clear()
+        self.mesh_mappers.clear()
+
+        if mesh_model is None:
+            # 기하 형상 복원
+            self._apply_fea_visibility()
+            self.render()
+            return
+
+        from vtk.util import numpy_support
+        from meshing.surface_extractor import boundary_faces
+
+        # 체적 메쉬가 생성되면 이전 불리언 솔리드 액터는 숨기고 체적 메쉬 표면을 표시
+        self.cortical_actor.SetVisibility(False)
+        self.cancellous_actor.SetVisibility(False)
+        self.implant_actor.SetVisibility(False)
+
+        for part in mesh_model.parts:
+            faces_nodes, _ = boundary_faces(part.elements, nodes=part.nodes)
+            if len(faces_nodes) == 0:
+                continue
+
+            poly = vtk.vtkPolyData()
+            pts = vtk.vtkPoints()
+            pts.SetData(numpy_support.numpy_to_vtk(np.ascontiguousarray(part.nodes, dtype=np.float32), deep=True))
+            poly.SetPoints(pts)
+
+            cells = vtk.vtkCellArray()
+            n_faces = len(faces_nodes)
+            cells_arr = np.empty((n_faces, 4), dtype=np.int64)
+            cells_arr[:, 0] = 3
+            cells_arr[:, 1:] = faces_nodes
+            vtk_id_arr = numpy_support.numpy_to_vtkIdTypeArray(np.ascontiguousarray(cells_arr.ravel()), deep=True)
+            cells.SetCells(n_faces, vtk_id_arr)
+            poly.SetPolys(cells)
+
+            mapper = vtk.vtkPolyDataMapper()
+            mapper.SetInputData(poly)
+            if hasattr(self, "fea_clip_plane") and getattr(self.state_mgr, "fea_clipping", {}).get("enabled", False):
+                mapper.AddClippingPlane(self.fea_clip_plane)
+
+            actor = vtk.vtkActor()
+            actor.SetMapper(mapper)
+            actor.GetProperty().EdgeVisibilityOn()
+            actor.GetProperty().SetEdgeColor(0.25, 0.25, 0.30)
+
+            if part.name == "implant":
+                actor.GetProperty().SetColor(0.92, 0.76, 0.38)
+                actor.GetProperty().SetOpacity(1.0)
+                actor.GetProperty().SetSpecular(0.5)
+            else:
+                actor.GetProperty().SetColor(0.85, 0.82, 0.78)
+                actor.GetProperty().SetOpacity(0.85)
+
+            self.renderer.AddActor(actor)
+            self.mesh_actors[part.name] = actor
+            self.mesh_mappers[part.name] = mapper
+
+        self.stack.setCurrentWidget(self.vtkWidget)
+        self.render()
+
+    def _on_material_assignment_changed(self, mat_assign):
+        """물성 할당 시 요소 탄성계수(E)를 컬러맵으로 표시"""
+        if mat_assign is None or not self.mesh_mappers:
+            return
+
+        from vtk.util import numpy_support
+        from meshing.surface_extractor import boundary_faces
+
+        mesh_model = getattr(self.state_mgr, "mesh_model", None)
+        if mesh_model is None:
+            return
+
+        bone_part = mesh_model.get_part("bone")
+        if bone_part is not None and "bone" in self.mesh_mappers:
+            elem_mat_indices = mat_assign.element_material.get("bone")
+            if elem_mat_indices is not None:
+                faces_nodes, faces_info = boundary_faces(bone_part.elements, nodes=bone_part.nodes)
+                elem_indices = faces_info[:, 0]
+                face_mat_idx = elem_mat_indices[elem_indices]
+                e_vals = np.array([mat_assign.materials[idx].E for idx in face_mat_idx], dtype=np.float32)
+
+                vtk_scalars = numpy_support.numpy_to_vtk(e_vals, deep=True)
+                vtk_scalars.SetName("YoungsModulus_E")
+
+                mapper = self.mesh_mappers["bone"]
+                poly = mapper.GetInput()
+                poly.GetCellData().SetScalars(vtk_scalars)
+
+                # Cold-to-Hot 룩업 테이블
+                e_min = float(np.min(e_vals))
+                e_max = float(np.max(e_vals))
+                lut = vtk.vtkLookupTable()
+                lut.SetNumberOfTableValues(64)
+                lut.SetHueRange(0.667, 0.0)  # Blue to Red
+                lut.SetTableRange(e_min, max(e_min + 1.0, e_max))
+                lut.Build()
+
+                mapper.SetLookupTable(lut)
+                mapper.SetScalarRange(e_min, max(e_min + 1.0, e_max))
+                mapper.SetScalarModeToUseCellData()
+                mapper.ScalarVisibilityOn()
+
+        self.render()
+
+    def _on_bc_set_changed(self, bc_set):
+        """경계조건 변경 시 고정 절점(파란 점)과 하중 벡터(빨간 화살표) 표시"""
+        for act in self.bc_actors:
+            self.renderer.RemoveActor(act)
+        self.bc_actors.clear()
+
+        if bc_set is None:
+            self.render()
+            return
+
+        from vtk.util import numpy_support
+        mesh_model = getattr(self.state_mgr, "mesh_model", None)
+        if mesh_model is None:
+            return
+
+        # 1. 고정 절점(Fixed Nodes) 시각화: 파란색 포인트 글리프
+        all_fixed_coords = []
+        for fix in bc_set.fixed_node_sets:
+            p_name = fix.get("part", "")
+            part = mesh_model.get_part(p_name)
+            node_ids = fix.get("node_ids", np.array([], dtype=np.int64))
+            if part is not None and len(node_ids) > 0:
+                all_fixed_coords.append(part.nodes[node_ids])
+
+        if all_fixed_coords:
+            fixed_pts = np.vstack(all_fixed_coords)
+            poly_fixed = vtk.vtkPolyData()
+            pts = vtk.vtkPoints()
+            pts.SetData(numpy_support.numpy_to_vtk(np.ascontiguousarray(fixed_pts, dtype=np.float32), deep=True))
+            poly_fixed.SetPoints(pts)
+
+            glyph = vtk.vtkVertexGlyphFilter()
+            glyph.SetInputData(poly_fixed)
+            glyph.Update()
+
+            mapper_fix = vtk.vtkPolyDataMapper()
+            mapper_fix.SetInputConnection(glyph.GetOutputPort())
+
+            actor_fix = vtk.vtkActor()
+            actor_fix.SetMapper(mapper_fix)
+            actor_fix.GetProperty().SetColor(0.2, 0.55, 1.0)  # 파란색
+            actor_fix.GetProperty().SetPointSize(6.0)
+            self.renderer.AddActor(actor_fix)
+            self.bc_actors.append(actor_fix)
+
+        # 2. 하중 벡터(Loads) 시각화: 빨간색 화살표 글리프
+        for load in bc_set.loads:
+            p_name = load.get("part", "")
+            part = mesh_model.get_part(p_name)
+            node_ids = load.get("node_ids", np.array([], dtype=np.int64))
+            force_N = np.asarray(load.get("force_N", (0.0, 0.0, 0.0)), dtype=np.float64)
+            mag = float(np.linalg.norm(force_N))
+
+            if part is not None and len(node_ids) > 0 and mag > 1e-6:
+                load_pts = part.nodes[node_ids]
+                center = np.mean(load_pts, axis=0)
+
+                # 화살표 소스 생성
+                arrow = vtk.vtkArrowSource()
+                arrow.SetTipResolution(16)
+                arrow.SetShaftResolution(16)
+                arrow.SetTipLength(0.3)
+                arrow.SetTipRadius(0.12)
+                arrow.SetShaftRadius(0.04)
+
+                # 정규화 방향 벡터
+                dir_vec = force_N / mag
+
+                # 기본 방향 (1, 0, 0)에서 dir_vec로의 회전 축 및 각도
+                base_vec = np.array([1.0, 0.0, 0.0])
+                axis = np.cross(base_vec, dir_vec)
+                axis_norm = np.linalg.norm(axis)
+                dot = np.dot(base_vec, dir_vec)
+                angle_deg = np.degrees(np.arccos(np.clip(dot, -1.0, 1.0)))
+
+                arrow_len = min(15.0, max(5.0, mag * 0.08))
+
+                transform = vtk.vtkTransform()
+                # 화살표 팁이 작용점(center)을 가리키도록 배치
+                start_pt = center - dir_vec * arrow_len
+                transform.Translate(start_pt[0], start_pt[1], start_pt[2])
+                if axis_norm > 1e-6:
+                    axis = axis / axis_norm
+                    transform.RotateWXYZ(angle_deg, axis[0], axis[1], axis[2])
+                elif dot < -0.9999:
+                    transform.RotateWXYZ(180.0, 0.0, 1.0, 0.0)
+                transform.Scale(arrow_len, arrow_len, arrow_len)
+
+                tf_filter = vtk.vtkTransformPolyDataFilter()
+                tf_filter.SetTransform(transform)
+                tf_filter.SetInputConnection(arrow.GetOutputPort())
+                tf_filter.Update()
+
+                mapper_load = vtk.vtkPolyDataMapper()
+                mapper_load.SetInputConnection(tf_filter.GetOutputPort())
+
+                actor_load = vtk.vtkActor()
+                actor_load.SetMapper(mapper_load)
+                actor_load.GetProperty().SetColor(0.95, 0.25, 0.25)  # 빨간색
+                self.renderer.AddActor(actor_load)
+                self.bc_actors.append(actor_load)
+
+        self.render()
+
