@@ -449,12 +449,17 @@ def _decimate_to_target_edge(poly: vtk.vtkPolyData, target_edge_mm: float) -> vt
     reduction = 1.0 - target_ratio
     reduction = max(0.05, min(0.95, reduction))
 
-    decimator = vtk.vtkQuadricDecimation()
+    decimator = vtk.vtkDecimatePro()
     decimator.SetInputData(poly)
     decimator.SetTargetReduction(reduction)
-    decimator.VolumePreservationOn()
+    decimator.PreserveTopologyOn()
+    decimator.SplittingOff()
+    decimator.BoundaryVertexDeletionOff()
     decimator.Update()
-    return decimator.GetOutput()
+    out = decimator.GetOutput()
+    if out.GetNumberOfPolys() >= 4:
+        return out
+    return poly
 
 
 def _vtk_polydata_to_trimesh(poly: vtk.vtkPolyData) -> trimesh.Trimesh:

@@ -177,6 +177,50 @@ class TestUserInfoAndDrawing(unittest.TestCase):
         main_win.close()
         main_win2.close()
 
+    def test_05_user_info_roi_bounds_and_default_filename(self):
+        """User Info ROI 저장/복원 및 기본 파일명 ('DICOM 파일 명' + 날짜_시간) 검증"""
+        main_win = MainWindow()
+        vtk_img, meta = DicomReader.load_single_file(self.test_file)
+        main_win.state_mgr.set_volume_data(vtk_img, meta)
+        main_win.state_mgr.series_path = self.test_file
+
+        # 1. ROI 설정 및 User Info 데이터에 반영 확인
+        test_roi = (10.0, 50.0, 20.0, 60.0, 5.0, 35.0)
+        main_win.state_mgr.set_roi_bounds(test_roi)
+
+        data = main_win.mpr_container.get_user_info_data()
+        self.assertIn("roi_bounds", data)
+        self.assertEqual(data["roi_bounds"], list(test_roi))
+
+        # 2. 다른 인스턴스에서 로드 시 ROI 복원 확인
+        main_win2 = MainWindow()
+        main_win2.state_mgr.set_volume_data(vtk_img, meta)
+        main_win2.mpr_container.set_user_info_data(data)
+        self.assertEqual(main_win2.state_mgr.roi_bounds, test_roi)
+
+        # 3. 기본 파일명 규칙 검증: DICOM 파일명_YYYYMMDD_HHMMSS.json
+        base_dir = os.path.join(project_root, "saved")
+        from datetime import datetime
+        clean_name = os.path.basename(self.test_file.rstrip("/\\"))
+        clean_base, _ = os.path.splitext(clean_name)
+
+        # _save_user_info 내부 로직으로 생성되는 기본 경로 확인 (prompt_dialog=False로 파일 저장)
+        saved = main_win._save_user_info(prompt_dialog=False)
+        self.assertTrue(saved)
+
+        # saved 폴더에서 clean_base로 시작하는 json 파일 확인
+        saved_files = [f for f in os.listdir(base_dir) if f.startswith(clean_base) and f.endswith(".json")]
+        self.assertTrue(len(saved_files) > 0)
+        latest_file = sorted(saved_files)[-1]
+        # 날짜_시간 패턴이 포함되어 있는지 확인
+        self.assertIn(clean_base, latest_file)
+        # 생성된 파일 정리
+        os.remove(os.path.join(base_dir, latest_file))
+
+        main_win.close()
+        main_win2.close()
+
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -162,6 +162,8 @@ class AnalysisConfig:
     element_type: str
     ccx_path: Optional[str]
     n_threads: int
+    mesh_algorithm_3d: str = "auto"       # "auto", "delaunay", "netgen", "hxt"
+    optimize_netgen: bool = True          # Netgen 3D 볼륨 최적화기 활성화 여부
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert configuration to JSON-serializable dictionary."""
@@ -171,6 +173,8 @@ class AnalysisConfig:
             "element_type": str(self.element_type),
             "ccx_path": self.ccx_path,
             "n_threads": int(self.n_threads),
+            "mesh_algorithm_3d": str(self.mesh_algorithm_3d),
+            "optimize_netgen": bool(self.optimize_netgen),
         }
 
     @classmethod
@@ -182,4 +186,6 @@ class AnalysisConfig:
             element_type=str(data.get("element_type", "C3D10")),
             ccx_path=data.get("ccx_path"),
             n_threads=int(data.get("n_threads", 4)),
+            mesh_algorithm_3d=str(data.get("mesh_algorithm_3d", "auto")),
+            optimize_netgen=bool(data.get("optimize_netgen", True)),
         )

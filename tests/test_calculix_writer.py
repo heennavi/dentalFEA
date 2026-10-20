@@ -211,7 +211,7 @@ class TestCalculixWriterParsing:
             # 6. Tie check
             assert "*SURFACE, NAME=SURF_M_TIE_BONE_IMP, TYPE=ELEMENT" in content
             assert "*SURFACE, NAME=SURF_S_TIE_BONE_IMP, TYPE=NODE" in content
-            assert "*TIE, NAME=TIE_BONE_IMP, POSITION TOLERANCE=0.100000" in content
+            assert "*TIE, NAME=TIE_BONE_IMP, POSITION TOLERANCE=0.100000, ADJUST=NO" in content
             assert "SURF_S_TIE_BONE_IMP, SURF_M_TIE_BONE_IMP" in content
 
             # 7. Step & Solvers check

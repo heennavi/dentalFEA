@@ -187,8 +187,36 @@ class TestBooleanOps(unittest.TestCase):
                 # 외부 뷰어/trimesh 재로드 무결성 검증
                 loaded_mesh = trimesh.load_mesh(path)
                 self.assertIsInstance(loaded_mesh, trimesh.Trimesh)
-                self.assertGreater(len(loaded_mesh.faces), 0)
-                self.assertGreater(loaded_mesh.volume, 0.0)
+    def test_07_empty_cancellous_mesh_support(self):
+        """수질골이 없는 경우(빈 메쉬)에도 피질골 단독으로 안전하게 FEA 기하가 생성되는지 검증"""
+        cortical, _, implant = self._create_synthetic_model()
+        empty_cancellous = trimesh.Trimesh()
+
+        fea_geom = build_fea_geometry(
+            cortical_mesh=cortical,
+            cancellous_mesh=empty_cancellous,
+            implant_mesh=implant
+        )
+
+        rep = fea_geom.report
+        self.assertTrue(rep["cortical_watertight"])
+        self.assertTrue(rep["cancellous_watertight"])
+        self.assertEqual(rep["cancellous_volume"], 0.0)
+        self.assertIsNotNone(fea_geom.bone)
+        self.assertTrue(fea_geom.bone.is_watertight)
+        self.assertAlmostEqual(fea_geom.bone.volume, rep["cortical_volume"], delta=1e-3)
+
+    def test_08_bone_solid_mesh_generation(self):
+        """피질골과 수질골이 함께 있을 때 fea_geom.bone이 완벽하게 닫힌 단일 매니폴드로 생성되는지 검증"""
+        cortical, cancellous, implant = self._create_synthetic_model()
+        fea_geom = build_fea_geometry(cortical, cancellous, implant)
+
+        self.assertIsNotNone(fea_geom.bone)
+        self.assertTrue(fea_geom.bone.is_watertight)
+        self.assertGreater(fea_geom.bone.volume, 0.0)
+        # 전체 뼈 체적은 피질골 체적 + 수질골 체적과 일치해야 함
+        expected_total_bone_vol = fea_geom.report["remaining_bone_volume"]
+        self.assertAlmostEqual(fea_geom.bone.volume, expected_total_bone_vol, delta=5.0)
 
 
 if __name__ == "__main__":

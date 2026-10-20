@@ -731,6 +731,8 @@ class MPRContainer(QWidget):
                     break
         if hasattr(self.state_mgr, "implant_placement_mgr") and self.state_mgr.implant_placement_mgr:
             res["implants"] = self.state_mgr.implant_placement_mgr.to_dict()
+        if hasattr(self.state_mgr, "roi_bounds") and self.state_mgr.roi_bounds:
+            res["roi_bounds"] = list(self.state_mgr.roi_bounds)
         return res
 
     def set_user_info_data(self, data: dict):
@@ -739,6 +741,7 @@ class MPRContainer(QWidget):
         measure_data = data.get("measurements", [])
         shapes_data = data.get("shapes", [])
         implants_data = data.get("implants", [])
+        roi_data = data.get("roi_bounds", None)
 
         # 로드 중에는 user_info_modified 시그널 방출 방지
         prev_blocked = self.signalsBlocked()
@@ -756,6 +759,9 @@ class MPRContainer(QWidget):
 
             if implants_data and hasattr(self.state_mgr, "implant_placement_mgr") and self.state_mgr.implant_placement_mgr:
                 self.state_mgr.implant_placement_mgr.from_dict(implants_data)
+
+            if roi_data is not None and hasattr(self.state_mgr, "set_roi_bounds"):
+                self.state_mgr.set_roi_bounds(tuple(roi_data) if isinstance(roi_data, list) else roi_data)
 
             self._update_all_borders()
             self.render_all()

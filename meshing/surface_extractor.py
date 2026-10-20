@@ -268,6 +268,20 @@ def contact_pair_from_parts(
             position_tolerance_mm=tol_mm,
         )
 
+    # 5. 사면체 요소 붕괴 방지 필터:
+    # 어떤 사면체 요소의 4개 꼭짓점이 모두 slave_nodes에 포함되면,
+    # 해당 요소는 구속 시 3차원 체적이 0으로 압착(flatten)되어 음의 야코비안이 발생함.
+    # apex 꼭짓점(el[3])을 접촉면에서 제외하여 base 삼각면(el[0, 1, 2])만 접촉에 참여시키고
+    # 사면체의 3차원 높이와 체적을 보존함.
+    slave_node_set = set(matched_slave_nodes)
+    s_corner_elements = s_part.elements[:, :4]
+
+    for el in s_corner_elements:
+        if all(n in slave_node_set for n in el):
+            slave_node_set.discard(el[3])
+
+    filtered_slave_nodes = np.array(sorted(list(slave_node_set)), dtype=np.int64)
+
     master_faces = m_faces_info[matched_master_face_idx]
 
     return TieDef(
@@ -275,6 +289,6 @@ def contact_pair_from_parts(
         master_part=m_part.name,
         slave_part=s_part.name,
         master_faces=master_faces,
-        slave_nodes=matched_slave_nodes,
-        position_tolerance_mm=tol_mm,
+        slave_nodes=filtered_slave_nodes,
+        position_tolerance_mm=0.0,
     )

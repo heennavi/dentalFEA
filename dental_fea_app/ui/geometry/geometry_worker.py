@@ -163,38 +163,64 @@ class GeometryWorker(QThread):
 
             roi_ijk = (imin, imax, jmin, jmax, kmin, kmax)
 
-            # 3. 피질골 표면 메쉬 추출
-            self.progress_updated.emit(2, 4, "2/4: 피질골 및 수질골 표면 메쉬 추출 및 부피보존 스무딩 중...")
+            # 3. 피질골 및 전체 뼈 표면 메쉬 추출
+            self.progress_updated.emit(2, 4, "2/4: 피질골/수질골 및 전체 뼈 표면 메쉬 추출 및 부피보존 스무딩 중...")
             if self._is_aborted:
                 return
 
-            cortical_mesh = mask_to_surface(
-                mask_data=seg_res.cortical_mask,
-                reference_vtk=vtk_img,
-                spacing=spacing,
-                origin=origin,
-                roi_ijk=roi_ijk,
-                smooth_iterations=self.smooth_iterations,
-                smooth_passband=self.smooth_passband,
-                target_edge_mm=self.target_edge_mm,
-                keep_largest_component=False
-            )
+            has_c_voxels = seg_res.cortical_mask is not None and bool(np.any(seg_res.cortical_mask))
+            if has_c_voxels:
+                cortical_mesh = mask_to_surface(
+                    mask_data=seg_res.cortical_mask,
+                    reference_vtk=vtk_img,
+                    spacing=spacing,
+                    origin=origin,
+                    roi_ijk=roi_ijk,
+                    smooth_iterations=self.smooth_iterations,
+                    smooth_passband=self.smooth_passband,
+                    target_edge_mm=self.target_edge_mm,
+                    keep_largest_component=False
+                )
+            else:
+                cortical_mesh = trimesh.Trimesh()
 
             if self._is_aborted:
                 return
 
-            # 4. 수질골 표면 메쉬 추출
-            cancellous_mesh = mask_to_surface(
-                mask_data=seg_res.cancellous_mask,
-                reference_vtk=vtk_img,
-                spacing=spacing,
-                origin=origin,
-                roi_ijk=roi_ijk,
-                smooth_iterations=self.smooth_iterations,
-                smooth_passband=self.smooth_passband,
-                target_edge_mm=self.target_edge_mm,
-                keep_largest_component=False
-            )
+            # 4. 수질골 표면 메쉬 추출 (마스크에 영역이 있을 때만 안전하게 추출)
+            has_cn_voxels = seg_res.cancellous_mask is not None and bool(np.any(seg_res.cancellous_mask))
+            if has_cn_voxels:
+                cancellous_mesh = mask_to_surface(
+                    mask_data=seg_res.cancellous_mask,
+                    reference_vtk=vtk_img,
+                    spacing=spacing,
+                    origin=origin,
+                    roi_ijk=roi_ijk,
+                    smooth_iterations=self.smooth_iterations,
+                    smooth_passband=self.smooth_passband,
+                    target_edge_mm=self.target_edge_mm,
+                    keep_largest_component=False
+                )
+            else:
+                cancellous_mesh = trimesh.Trimesh()
+
+            if self._is_aborted:
+                return
+
+            # 전체 뼈(Bone) 단일 표면 메쉬 추출 (Phase 3 단일 체적 메싱 최적화용)
+            bone_mesh = None
+            if seg_res.bone_mask is not None and bool(np.any(seg_res.bone_mask)):
+                bone_mesh = mask_to_surface(
+                    mask_data=seg_res.bone_mask,
+                    reference_vtk=vtk_img,
+                    spacing=spacing,
+                    origin=origin,
+                    roi_ijk=roi_ijk,
+                    smooth_iterations=self.smooth_iterations,
+                    smooth_passband=self.smooth_passband,
+                    target_edge_mm=self.target_edge_mm,
+                    keep_largest_component=False
+                )
 
             # 5. Boolean 차집합 및 인터페이스 분할
             self.progress_updated.emit(3, 4, "3/4: 임플란트 식립부 Boolean 차집합 및 인터페이스 정리 중...")
@@ -205,7 +231,8 @@ class GeometryWorker(QThread):
                 cortical_mesh=cortical_mesh,
                 cancellous_mesh=cancellous_mesh,
                 implant_mesh=implant_mesh,
-                undersize_mm=self.undersize_mm
+                undersize_mm=self.undersize_mm,
+                bone_mesh=bone_mesh
             )
 
             if self._is_aborted:

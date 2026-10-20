@@ -1671,6 +1671,8 @@ class MPRWidget(QWidget):
             if self._is_roi_setting_mode and self._roi_rect_start and w_pt:
                 self._commit_roi_bounds(self._roi_rect_start, w_pt)
                 self._roi_rect_start = None
+                self.roi_rect_actor.SetVisibility(False)
+                self.render()
 
             elif self.interaction_mode == "draw" and self.draw_start_pt and w_pt:
                 style = self.draw_dialog.get_current_style() if self.draw_dialog else {}
@@ -1744,9 +1746,59 @@ class MPRWidget(QWidget):
         elif event.button() == Qt.MouseButton.RightButton:
             self._right_pressed = False
 
+    def _draw_roi_rect(self, pt1: Tuple[float, float, float], pt2: Tuple[float, float, float]):
+        """마우스 드래그 중 2D 슬라이스 평면 상에 임시 사각형 표시"""
+        self.roi_rect_points.Reset()
+        self.roi_rect_lines.Reset()
+
+        if self.axis == AXIS_AXIAL:
+            z = pt1[2]
+            pts = [
+                (pt1[0], pt1[1], z),
+                (pt2[0], pt1[1], z),
+                (pt2[0], pt2[1], z),
+                (pt1[0], pt2[1], z),
+            ]
+        elif self.axis == AXIS_CORONAL:
+            y = pt1[1]
+            pts = [
+                (pt1[0], y, pt1[2]),
+                (pt2[0], y, pt1[2]),
+                (pt2[0], y, pt2[2]),
+                (pt1[0], y, pt2[2]),
+            ]
+        elif self.axis == AXIS_SAGITTAL:
+            x = pt1[0]
+            pts = [
+                (x, pt1[1], pt1[2]),
+                (x, pt2[1], pt1[2]),
+                (x, pt2[1], pt2[2]),
+                (x, pt1[1], pt2[2]),
+            ]
+        else:
+            return
+
+        for p in pts:
+            self.roi_rect_points.InsertNextPoint(p[0], p[1], p[2])
+
+        for i in range(4):
+            line = vtk.vtkLine()
+            line.GetPointIds().SetId(0, i)
+            line.GetPointIds().SetId(1, (i + 1) % 4)
+            self.roi_rect_lines.InsertNextCell(line)
+
+        self.roi_rect_poly.Modified()
+        self.roi_rect_actor.SetVisibility(True)
+        self.render()
+
     def _commit_roi_bounds(self, pt1: Tuple[float, float, float], pt2: Tuple[float, float, float]):
         """그린 2D 사각형을 기반으로 3D 육면체 Bounding Box 산출 및 StateManager 브로드캐스트"""
-        bx0, bx1, by0, by1, bz0, bz1 = self.state_mgr.bounds
+        # 기존 설정된 roi_bounds가 있으면 해당 축을 유지하여 좌표 왜곡 방지
+        current = getattr(self.state_mgr, "roi_bounds", None) or getattr(self.state_mgr, "bounds", None)
+        if current is None or len(current) != 6:
+            return
+        bx0, bx1, by0, by1, bz0, bz1 = current
+
         x_min, x_max = min(pt1[0], pt2[0]), max(pt1[0], pt2[0])
         y_min, y_max = min(pt1[1], pt2[1]), max(pt1[1], pt2[1])
         z_min, z_max = min(pt1[2], pt2[2]), max(pt1[2], pt2[2])

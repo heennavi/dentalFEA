@@ -22,11 +22,12 @@ from trimesh.proximity import closest_point
 
 @dataclass
 class FeaGeometry:
-    """FEA 입력용 3개 솔리드 메쉬 및 기하 분석 보고서"""
+    """FEA 입력용 솔리드 메쉬 및 기하 분석 보고서"""
     cortical: trimesh.Trimesh
     cancellous: trimesh.Trimesh
     implant: trimesh.Trimesh
     report: Dict[str, Any]
+    bone: Optional[trimesh.Trimesh] = None
 
 
 def filter_small_components(
@@ -88,13 +89,19 @@ def filter_small_components(
         return merged, retained_count
 
 
-def ensure_watertight(mesh: trimesh.Trimesh, name: str = "mesh") -> trimesh.Trimesh:
+def ensure_watertight(
+    mesh: trimesh.Trimesh,
+    name: str = "mesh",
+    allow_empty: bool = False
+) -> trimesh.Trimesh:
     """
     메쉬가 watertight(닫힌 매니폴드) 상태인지 확인하고,
     아닐 경우 미세 파편 제거, 구멍 메우기 및 비매니폴드 수리를 순차적으로 시도합니다.
     FEA 체적 메싱(Volume meshing)을 위해 항상 견고하고 닫힌 솔리드를 보장합니다.
     """
     if mesh is None or len(mesh.faces) == 0:
+        if allow_empty:
+            return trimesh.Trimesh()
         raise ValueError(f"'{name}' 메쉬가 비어 있거나 존재하지 않습니다.")
 
     m = mesh.copy()
@@ -284,42 +291,31 @@ def build_fea_geometry(
     cancellous_mesh: trimesh.Trimesh,
     implant_mesh: trimesh.Trimesh,
     undersize_mm: float = 0.0,
-    margin_mm: Optional[float] = None
+    margin_mm: Optional[float] = None,
+    bone_mesh: Optional[trimesh.Trimesh] = None,
 ) -> FeaGeometry:
     """
     피질골, 수질골 메쉬에서 임플란트 식립 공간을 절제하고 중복 부피를 정리하여
-    FEA 입력용 3개 솔리드(피질골, 수질골, 임플란트)를 구축합니다.
+    FEA 입력용 솔리드 메쉬들을 구축합니다.
 
-    [주의]
-    피질골과 수질골 사이 경계면은 Phase 3에서 노드를 공유(conformal)해야 합니다.
-    이 함수에서는 두 솔리드가 겹치지 않고 경계가 일치하도록 만드는 데까지만 처리하며,
-    메쉬 공유(Conformal meshing) 처리는 Phase 3(Gmsh)에서 수행합니다.
-
-    Parameters
-    ----------
-    cortical_mesh : trimesh.Trimesh
-        피질골 표면 메쉬 (LPS mm)
-    cancellous_mesh : trimesh.Trimesh
-        수질골 표면 메쉬 (LPS mm)
-    implant_mesh : trimesh.Trimesh
-        식립된 위치의 임플란트 표면 메쉬 (LPS mm)
-    undersize_mm : float, optional
-        언더사이즈 드릴링 크기 (기본값 0.0 = 정확한 맞닿음)
-    margin_mm : float, optional
-        추가 안전 여유 마진 (기본 None)
-
-    Returns
-    -------
-    FeaGeometry
-        정리된 3개 솔리드 메쉬(cortical, cancellous, implant) 및 기하 분석 보고서(report)
+    [설계 원칙]
+    - cancellous_mesh가 비어 있거나 없는 경우 피질골 단독으로 안전하게 FEA 기하를 구성합니다.
+    - bone 속성에 피질골과 수질골이 완벽하게 결합된 단일 매니폴드 뼈 메쉬를 보장하여
+      체적 메싱(Volume meshing) 시 경계면 중복(overlapping facets)을 원천 방지합니다.
     """
     # 0. 입력 메쉬 watertight 검사 및 수리
-    c_mesh = ensure_watertight(cortical_mesh, name="cortical")
-    cn_mesh = ensure_watertight(cancellous_mesh, name="cancellous")
+    has_cortical = cortical_mesh is not None and len(getattr(cortical_mesh, "faces", [])) > 0
+    has_cancellous = cancellous_mesh is not None and len(getattr(cancellous_mesh, "faces", [])) > 0
+
+    if not has_cortical and not has_cancellous:
+        raise ValueError("골 조직(피질골 또는 수질골) 표면 메쉬가 비어 있거나 존재하지 않습니다. ROI 범위를 다시 설정하십시오.")
+
+    c_mesh = ensure_watertight(cortical_mesh, name="cortical", allow_empty=True) if has_cortical else None
+    cn_mesh = ensure_watertight(cancellous_mesh, name="cancellous", allow_empty=True) if has_cancellous else None
     i_mesh = ensure_watertight(implant_mesh, name="implant")
 
-    initial_cortical_vol = abs(float(c_mesh.volume))
-    initial_cancellous_vol = abs(float(cn_mesh.volume))
+    initial_cortical_vol = abs(float(c_mesh.volume)) if has_cortical and c_mesh is not None else 0.0
+    initial_cancellous_vol = abs(float(cn_mesh.volume)) if has_cancellous and cn_mesh is not None else 0.0
     initial_bone_vol = initial_cortical_vol + initial_cancellous_vol
 
     # 1. 드릴링 공간용 메쉬 생성
@@ -330,56 +326,104 @@ def build_fea_geometry(
     )
     implant_space = ensure_watertight(implant_space, name="implant_space")
 
-    # 2. 피질골' = 피질골 - 임플란트공간
-    try:
-        cortical_diff = trimesh.boolean.difference(
-            [c_mesh, implant_space],
-            engine="manifold",
-            check_volume=False
-        )
-    except Exception as e:
-        warnings.warn(f"피질골 Boolean 차집합 연산 중 경고 발생: {e}", UserWarning)
-        cortical_diff = c_mesh.copy()
+    # 2. 피질골 처리
+    if has_cortical and c_mesh is not None:
+        try:
+            cortical_diff = trimesh.boolean.difference(
+                [c_mesh, implant_space],
+                engine="manifold",
+                check_volume=False
+            )
+        except Exception as e:
+            warnings.warn(f"피질골 Boolean 차집합 연산 중 경고 발생: {e}", UserWarning)
+            cortical_diff = c_mesh.copy()
 
-    # 3. 수질골' = 수질골 - 임플란트공간
-    try:
-        cancellous_diff = trimesh.boolean.difference(
-            [cn_mesh, implant_space],
-            engine="manifold",
-            check_volume=False
-        )
-    except Exception as e:
-        warnings.warn(f"수질골 Boolean 차집합 연산 중 경고 발생: {e}", UserWarning)
-        cancellous_diff = cn_mesh.copy()
+        cortical_final, c_pieces = filter_small_components(cortical_diff, min_volume_ratio=0.01, name="cortical")
+        cortical_final = ensure_watertight(cortical_final, name="cortical")
+        cortical_final.fix_normals()
+    else:
+        cortical_final = trimesh.Trimesh()
+        c_pieces = 0
 
-    # 4. 피질골'와 수질골'의 중복 부피 제거: 수질골' = 수질골' - 피질골'
-    # (피질골과 수질골 사이 경계면 일치화)
-    try:
-        cancellous_clean = trimesh.boolean.difference(
-            [cancellous_diff, cortical_diff],
-            engine="manifold",
-            check_volume=False
-        )
-    except Exception as e:
-        warnings.warn(f"수질골-피질골 인터페이스 정리 중 경고 발생: {e}", UserWarning)
-        cancellous_clean = cancellous_diff.copy()
+    # 3. 수질골 처리 (수질골이 존재하는 경우만 수행)
+    if has_cancellous and cn_mesh is not None:
+        try:
+            cancellous_diff = trimesh.boolean.difference(
+                [cn_mesh, implant_space],
+                engine="manifold",
+                check_volume=False
+            )
+        except Exception as e:
+            warnings.warn(f"수질골 Boolean 차집합 연산 중 경고 발생: {e}", UserWarning)
+            cancellous_diff = cn_mesh.copy()
 
-    # 5. 작은 파편 조각 정리 및 분리 경고
-    cortical_final, c_pieces = filter_small_components(cortical_diff, min_volume_ratio=0.01, name="cortical")
-    cancellous_final, cn_pieces = filter_small_components(cancellous_clean, min_volume_ratio=0.01, name="cancellous")
+        # 4. 피질골과 수질골 사이 중복 부피 제거
+        if has_cortical and len(cortical_final.faces) > 0:
+            try:
+                cancellous_clean = trimesh.boolean.difference(
+                    [cancellous_diff, cortical_final],
+                    engine="manifold",
+                    check_volume=False
+                )
+            except Exception as e:
+                warnings.warn(f"수질골-피질골 인터페이스 정리 중 경고 발생: {e}", UserWarning)
+                cancellous_clean = cancellous_diff.copy()
+        else:
+            cancellous_clean = cancellous_diff
+
+        cancellous_final, cn_pieces = filter_small_components(cancellous_clean, min_volume_ratio=0.01, name="cancellous")
+        cancellous_final = ensure_watertight(cancellous_final, name="cancellous", allow_empty=True)
+        if len(cancellous_final.faces) > 0:
+            cancellous_final.fix_normals()
+    else:
+        cancellous_final = trimesh.Trimesh()
+        cn_pieces = 0
+
+    # 5. 임플란트 정리
     implant_final, i_pieces = filter_small_components(i_mesh, min_volume_ratio=0.01, name="implant")
-
-    # 6. 각 결과 watertight 검증 및 보장
-    cortical_final = ensure_watertight(cortical_final, name="cortical")
-    cancellous_final = ensure_watertight(cancellous_final, name="cancellous")
     implant_final = ensure_watertight(implant_final, name="implant")
-
-    cortical_final.fix_normals()
-    cancellous_final.fix_normals()
     implant_final.fix_normals()
 
-    c_vol = abs(float(cortical_final.volume))
-    cn_vol = abs(float(cancellous_final.volume))
+    # 6. 단일 결합 뼈 메쉬(bone_final) 구축
+    if bone_mesh is not None and len(getattr(bone_mesh, "faces", [])) > 0:
+        try:
+            b_mesh = ensure_watertight(bone_mesh, name="bone")
+            bone_diff = trimesh.boolean.difference(
+                [b_mesh, implant_space],
+                engine="manifold",
+                check_volume=False
+            )
+            bone_final, _ = filter_small_components(bone_diff, min_volume_ratio=0.01, name="bone")
+            bone_final = ensure_watertight(bone_final, name="bone")
+            bone_final.fix_normals()
+        except Exception as e:
+            warnings.warn(f"전체 뼈 Boolean 차집합 실패, 기본 피질골/수질골 활용: {e}", UserWarning)
+            bone_final = cortical_final.copy() if has_cortical else cancellous_final.copy()
+    elif has_cortical and has_cancellous and len(cancellous_final.faces) > 0 and len(cortical_final.faces) > 0:
+        # manifold3d 결합으로 내부 경계면을 제거한 완벽한 단일 껍질 생성
+        try:
+            import manifold3d as m3d
+            m_c = m3d.Manifold(cortical_final.vertices, cortical_final.faces)
+            m_cn = m3d.Manifold(cancellous_final.vertices, cancellous_final.faces)
+            m_u = m_c + m_cn
+            raw = m_u.to_mesh()
+            bone_final = trimesh.Trimesh(raw.vert_properties[:, :3], raw.tri_verts, process=True)
+            bone_final = ensure_watertight(bone_final, name="bone")
+            bone_final.fix_normals()
+        except Exception:
+            try:
+                bone_final = trimesh.boolean.union([cortical_final, cancellous_final], engine="manifold")
+                bone_final = ensure_watertight(bone_final, name="bone")
+                bone_final.fix_normals()
+            except Exception:
+                bone_final = cortical_final.copy()
+    elif has_cortical:
+        bone_final = cortical_final.copy()
+    else:
+        bone_final = cancellous_final.copy()
+
+    c_vol = abs(float(cortical_final.volume)) if len(cortical_final.faces) > 0 else 0.0
+    cn_vol = abs(float(cancellous_final.volume)) if len(cancellous_final.faces) > 0 else 0.0
     i_vol = abs(float(implant_final.volume))
     final_bone_vol = c_vol + cn_vol
     removed_bone_vol = max(0.0, initial_bone_vol - final_bone_vol)
@@ -393,7 +437,7 @@ def build_fea_geometry(
 
     # 7. 임플란트와 뼈의 접촉 면적(mm^2) 추정 (거리 임계 0.05 mm)
     c_contact_area = calculate_contact_area(implant_final, cortical_final, threshold_mm=0.05)
-    cn_contact_area = calculate_contact_area(implant_final, cancellous_final, threshold_mm=0.05)
+    cn_contact_area = calculate_contact_area(implant_final, cancellous_final, threshold_mm=0.05) if len(cancellous_final.faces) > 0 else 0.0
 
     report = {
         "cortical_volume": c_vol,
@@ -405,7 +449,7 @@ def build_fea_geometry(
         "remaining_bone_volume": final_bone_vol,
         "removed_bone_volume": removed_bone_vol,
         "cortical_watertight": bool(cortical_final.is_watertight),
-        "cancellous_watertight": bool(cancellous_final.is_watertight),
+        "cancellous_watertight": bool(cancellous_final.is_watertight) if len(cancellous_final.faces) > 0 else True,
         "implant_watertight": bool(implant_final.is_watertight),
         "cortical_pieces": c_pieces,
         "cancellous_pieces": cn_pieces,
@@ -421,7 +465,8 @@ def build_fea_geometry(
         cortical=cortical_final,
         cancellous=cancellous_final,
         implant=implant_final,
-        report=report
+        report=report,
+        bone=bone_final
     )
 
 

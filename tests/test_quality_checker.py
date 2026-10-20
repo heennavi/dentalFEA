@@ -74,3 +74,22 @@ class TestQualityChecker:
         assert "총 요소 수: 1 개" in text
         assert "정상" in text
         assert "형상비(Aspect Ratio)" in text
+
+    def test_quality_report_text_with_mesh_model(self, regular_tet):
+        """Verify quality_report_text and assert_mesh_ok accept MeshModel instance."""
+        from fea.models import MeshPart, MeshModel
+
+        nodes, elements = regular_tet
+        part1 = MeshPart(name="bone", nodes=nodes, elements=elements, element_type="C3D4")
+        part2 = MeshPart(name="implant", nodes=nodes, elements=elements, element_type="C3D4")
+        model = MeshModel(parts=[part1, part2])
+
+        text = quality_report_text(model)
+        assert "3D 사면체 어셈블리 품질 검사 보고서" in text
+        assert "[bone (C3D4)]" in text
+        assert "[implant (C3D4)]" in text
+        assert "어셈블리 총 요소 수: 2 개" in text
+        assert "양호" in text
+
+        # assert_mesh_ok should pass with healthy MeshModel
+        assert_mesh_ok(model, max_negative=0)

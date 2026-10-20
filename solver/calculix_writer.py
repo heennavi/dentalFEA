@@ -150,7 +150,7 @@ def write_inp(
     bc: BoundaryConditionSet,
     ties: List[TieDef],
     title: str = "dental_fea",
-    apply_ccx_ordering: bool = True
+    apply_ccx_ordering: bool = False
 ) -> None:
     """
     Write a complete, valid CalculiX .inp deck for linear elastic static FEA.
@@ -338,17 +338,19 @@ def write_inp(
                 if len(buffer) >= chunk_size:
                     flush_buffer(f)
 
-            # Slave Surface: TYPE=NODE, node list
+            # Slave Surface: TYPE=NODE, node list (CalculiX requires strictly 1 entry per line for TYPE=NODE)
             buffer.append(f"*SURFACE, NAME={surf_slave}, TYPE=NODE")
             slave_gnids = mapper.node_ids(tie.slave_part, tie.slave_nodes)
-            for line in format_card_items(slave_gnids, max_per_line=16):
+            for line in format_card_items(slave_gnids, max_per_line=1):
                 buffer.append(line)
                 if len(buffer) >= chunk_size:
                     flush_buffer(f)
 
-            # *TIE
+            # *TIE (ADJUST=NO를 명시하여 절점 강제 이동에 의한 사면체 반전 및 음의 야코비안 방지)
             tol = float(tie.position_tolerance_mm)
-            buffer.append(f"*TIE, NAME={tie_name}, POSITION TOLERANCE={tol:.6f}")
+            if tol <= 0.0:
+                tol = 0.2  # 기본 0.2mm 접촉 탐색 공차 보장
+            buffer.append(f"*TIE, NAME={tie_name}, POSITION TOLERANCE={tol:.6f}, ADJUST=NO")
             buffer.append(f"{surf_slave}, {surf_master}")
 
         # 7) *STEP / *STATIC / *BOUNDARY / *CLOAD / Output / *END STEP

@@ -124,16 +124,58 @@ def tet_quality(nodes: np.ndarray, elements: np.ndarray) -> Dict[str, Any]:
     }
 
 
-def quality_report_text(report: Dict[str, Any]) -> str:
+def quality_report_text(report: Any) -> str:
     """
-    Format a user-friendly Korean summary text from quality inspection report.
+    Format a user-friendly Korean summary text from quality inspection report or MeshModel/MeshPart.
 
     Args:
-        report: Dictionary returned by tet_quality().
+        report: Dictionary returned by tet_quality(), or a MeshModel / MeshPart instance.
 
     Returns:
         str: Multiline formatted report text.
     """
+    if hasattr(report, "parts"):
+        # MeshModel 인스턴스 (어셈블리 전체 및 파트별 보고서)
+        lines = [
+            "========================================",
+            "        3D 사면체 어셈블리 품질 검사 보고서   ",
+            "========================================",
+        ]
+        total_elems = 0
+        total_neg = 0
+        total_bad = 0
+        for part in report.parts:
+            p_rep = tet_quality(part.nodes, part.elements)
+            n_elems = p_rep.get("n_elements", 0)
+            n_neg = p_rep.get("n_negative", 0)
+            n_bad = len(p_rep.get("bad_element_ids", []))
+            total_elems += n_elems
+            total_neg += n_neg
+            total_bad += n_bad
+            ar_max = p_rep.get("aspect_max", 0.0)
+            min_sj = p_rep.get("min_scaled_jacobian", 1.0)
+            min_vol = p_rep.get("min_volume", 0.0)
+            neg_txt = "0개 (정상)" if n_neg == 0 else f"⚠️ {n_neg}개 (반전)"
+
+            lines.append(f"[{part.name} ({part.element_type})]")
+            lines.append(f"  • 요소 수: {n_elems:,}개 | 음의 부피(반전): {neg_txt}")
+            lines.append(f"  • 최소 체적: {min_vol:.6f} mm³")
+            lines.append(f"  • 최대 형상비: {ar_max:.2f} | 최소 Scaled Jacobian: {min_sj:.4f}")
+            lines.append(f"  • 불량 요소: {n_bad:,}개")
+            lines.append("----------------------------------------")
+
+        overall_status = "양호 (우수)" if (total_neg == 0 and total_bad < total_elems * 0.05) else "주의 요망 (요소 크기 조정 권장)"
+        lines.append(f"• 어셈블리 총 요소 수: {total_elems:,} 개")
+        lines.append(f"• 전체 반전 요소: {total_neg} 개")
+        lines.append(f"• 전체 불량 요소: {total_bad:,} 개")
+        lines.append(f"• 전반적 품질 판정: {overall_status}")
+        lines.append("========================================")
+        return "\n".join(lines)
+
+    if hasattr(report, "nodes") and hasattr(report, "elements"):
+        # MeshPart 인스턴스
+        report = tet_quality(report.nodes, report.elements)
+
     n_elems = report.get("n_elements", 0)
     n_neg = report.get("n_negative", 0)
     min_vol = report.get("min_volume", 0.0)
@@ -161,17 +203,26 @@ def quality_report_text(report: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def assert_mesh_ok(report: Dict[str, Any], max_negative: int = 0) -> None:
+def assert_mesh_ok(report: Any, max_negative: int = 0) -> None:
     """
     Assert that mesh contains no more than max_negative inverted elements.
 
     Args:
-        report: Dictionary returned by tet_quality().
+        report: Dictionary returned by tet_quality(), or MeshModel / MeshPart instance.
         max_negative: Maximum tolerable inverted elements (default: 0).
 
     Raises:
         ValueError: If inverted element count exceeds max_negative.
     """
+    if hasattr(report, "parts"):
+        for part in report.parts:
+            p_rep = tet_quality(part.nodes, part.elements)
+            assert_mesh_ok(p_rep, max_negative=max_negative)
+        return
+
+    if hasattr(report, "nodes") and hasattr(report, "elements"):
+        report = tet_quality(report.nodes, report.elements)
+
     n_neg = report.get("n_negative", 0)
     if n_neg > max_negative:
         raise ValueError(

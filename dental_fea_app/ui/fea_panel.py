@@ -10,8 +10,8 @@ Left workflow control panel tab widget for Phase 3 FEA operations:
 import os
 from typing import Optional, Dict, Any
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel,
-    QPushButton, QSpinBox, QDoubleSpinBox, QComboBox,
+    QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
+    QPushButton, QSpinBox, QDoubleSpinBox, QComboBox, QCheckBox,
     QProgressBar, QGroupBox, QSlider, QLineEdit,
     QPlainTextEdit, QFileDialog, QMessageBox, QSizePolicy, QFrame
 )
@@ -64,7 +64,9 @@ class FeaPanel(QWidget):
 
         # 요소 차수 선택
         row_elem = QHBoxLayout()
-        row_elem.addWidget(QLabel("요소 차수:", group_mesh))
+        lbl_elem = QLabel("요소 차수:", group_mesh)
+        lbl_elem.setFixedWidth(52)  # 글자 2개분만큼 좌측으로 당겨지도록 폭 고정
+        row_elem.addWidget(lbl_elem)
         self.combo_elem_type = QComboBox(group_mesh)
         self.combo_elem_type.addItem("C3D10 (2차 10절점 고정밀)", "C3D10")
         self.combo_elem_type.addItem("C3D4 (1차 4절점 미리보기)", "C3D4")
@@ -73,23 +75,51 @@ class FeaPanel(QWidget):
 
         # 원거리 메쉬 크기
         row_far = QHBoxLayout()
-        row_far.addWidget(QLabel("먼 영역 크기 (mm):", group_mesh))
+        lbl_far = QLabel("먼 영역 크기 (mm):", group_mesh)
+        lbl_far.setFixedWidth(122)
+        row_far.addWidget(lbl_far)
         self.spin_size_far = QDoubleSpinBox(group_mesh)
         self.spin_size_far.setRange(0.5, 10.0)
         self.spin_size_far.setValue(2.0)
         self.spin_size_far.setSingleStep(0.2)
+        self.spin_size_far.setFixedWidth(60)  # 기존 폭의 1/2로 축소
         row_far.addWidget(self.spin_size_far)
+        row_far.addStretch()
         vbox_mesh.addLayout(row_far)
 
         # 임플란트 주변 메쉬 크기
         row_near = QHBoxLayout()
-        row_near.addWidget(QLabel("임플란트 주변 (mm):", group_mesh))
+        lbl_near = QLabel("임플란트 주변 (mm):", group_mesh)
+        lbl_near.setFixedWidth(122)
+        row_near.addWidget(lbl_near)
         self.spin_size_near = QDoubleSpinBox(group_mesh)
         self.spin_size_near.setRange(0.1, 5.0)
         self.spin_size_near.setValue(0.5)
         self.spin_size_near.setSingleStep(0.1)
+        self.spin_size_near.setFixedWidth(60)  # 기존 폭의 1/2로 축소
         row_near.addWidget(self.spin_size_near)
+        row_near.addStretch()
         vbox_mesh.addLayout(row_near)
+
+        # 3D 메싱 알고리즘 선택
+        row_algo = QHBoxLayout()
+        lbl_algo = QLabel("메싱 알고리즘:", group_mesh)
+        lbl_algo.setFixedWidth(85)
+        row_algo.addWidget(lbl_algo)
+        self.combo_mesh_algo = QComboBox(group_mesh)
+        self.combo_mesh_algo.addItem("자동 (Auto - Delaunay/HXT)", "auto")
+        self.combo_mesh_algo.addItem("Delaunay 3D (안정 표준형)", "delaunay")
+        self.combo_mesh_algo.addItem("HXT 3D (고속 병렬)", "hxt")
+        self.combo_mesh_algo.addItem("Netgen 3D (정밀 CAD형)", "netgen")
+        row_algo.addWidget(self.combo_mesh_algo)
+        vbox_mesh.addLayout(row_algo)
+
+        # 메쉬 품질 최적화 옵션
+        self.chk_optimize_netgen = QCheckBox("3D 볼륨 메쉬 품질 최적화 적용 (Relocate3D 노드 정돈)", group_mesh)
+        self.chk_optimize_netgen.setChecked(True)
+        self.chk_optimize_netgen.setToolTip("사면체 요소의 형상 왜곡을 개선하고 노드 위치를 정돈합니다.")
+        self.chk_optimize_netgen.setStyleSheet("font-size: 10px; color: #abb2bf;")
+        vbox_mesh.addWidget(self.chk_optimize_netgen)
 
         # 메쉬 생성 버튼 및 진행바
         self.btn_mesh = QPushButton("⚙️ 체적 메쉬 생성", group_mesh)
@@ -124,23 +154,29 @@ class FeaPanel(QWidget):
         # 프리셋 선택
         row_preset = QHBoxLayout()
         row_preset.addWidget(QLabel("프리셋:", group_mat))
+        self.btn_choose_preset = QPushButton("선택...", group_mat)
+        btn_preset_w = self.btn_choose_preset.fontMetrics().horizontalAdvance("선택...") + 14
+        self.btn_choose_preset.setFixedWidth(btn_preset_w)
+        self.btn_choose_preset.clicked.connect(self._on_choose_preset)
+        row_preset.addWidget(self.btn_choose_preset)
+
         self.lbl_preset_path = QLabel("기본 presets.json", group_mat)
         self.lbl_preset_path.setStyleSheet("color: #61afef; font-size: 10px;")
-        self.btn_choose_preset = QPushButton("선택...", group_mat)
-        self.btn_choose_preset.setFixedWidth(50)
-        self.btn_choose_preset.clicked.connect(self._on_choose_preset)
         row_preset.addWidget(self.lbl_preset_path, stretch=1)
-        row_preset.addWidget(self.btn_choose_preset)
         vbox_mat.addLayout(row_preset)
         self._custom_preset_path: Optional[str] = None
 
         # Bin 개수
         row_bins = QHBoxLayout()
-        row_bins.addWidget(QLabel("E 구간(Bin) 개수:", group_mat))
+        lbl_bins = QLabel("E 구간(Bin) 개수:", group_mat)
+        lbl_bins.setFixedWidth(122)
+        row_bins.addWidget(lbl_bins)
         self.spin_bins = QSpinBox(group_mat)
         self.spin_bins.setRange(5, 100)
         self.spin_bins.setValue(30)
+        self.spin_bins.setFixedWidth(60)  # 기존 폭의 1/2로 축소
         row_bins.addWidget(self.spin_bins)
+        row_bins.addStretch()
         vbox_mat.addLayout(row_bins)
 
         # 물성 할당 버튼
@@ -168,6 +204,7 @@ class FeaPanel(QWidget):
         self.spin_fixed_z.setRange(-9999.0, 9999.0)
         self.spin_fixed_z.setValue(0.0)
         self.spin_fixed_z.setSingleStep(1.0)
+        self.spin_fixed_z.setFixedWidth(80)  # 현재의 2/3 수준으로 축소
         self.btn_sync_z = QPushButton("현재 Z 복사", group_bc)
         self.btn_sync_z.setToolTip("현재 2D 슬라이스 커서 Z 위치 복사")
         self.btn_sync_z.clicked.connect(self._on_sync_current_z)
@@ -255,11 +292,38 @@ class FeaPanel(QWidget):
         # 버튼들
         row_btns = QHBoxLayout()
         self.btn_export_inp = QPushButton("📄 .inp 저장", group_solver)
+        self.btn_export_inp.setStyleSheet("""
+            QPushButton {
+                font-weight: bold;
+                padding: 5px;
+            }
+            QPushButton:disabled {
+                color: #6c707e;
+            }
+        """)
         self.btn_export_inp.clicked.connect(self._on_export_inp_clicked)
         row_btns.addWidget(self.btn_export_inp)
 
         self.btn_run_solver = QPushButton("▶ 해석 실행", group_solver)
-        self.btn_run_solver.setStyleSheet("background-color: #1e3a5f; border-color: #3878b2; font-weight: bold;")
+        self.btn_run_solver.setStyleSheet("""
+            QPushButton {
+                background-color: #1e3a5f;
+                color: #ffffff;
+                border: 1px solid #3878b2;
+                border-radius: 4px;
+                font-weight: bold;
+                padding: 6px;
+            }
+            QPushButton:hover {
+                background-color: #2b5288;
+                border-color: #5294e2;
+            }
+            QPushButton:disabled {
+                background-color: #2b2d30;
+                color: #6c707e;
+                border: 1px solid #3e4249;
+            }
+        """)
         self.btn_run_solver.clicked.connect(self._on_run_solver_clicked)
         row_btns.addWidget(self.btn_run_solver)
 
@@ -326,8 +390,38 @@ class FeaPanel(QWidget):
         self.btn_mesh.setEnabled(has_geom)
         self.btn_assign_material.setEnabled(has_mesh)
         self.btn_validate_bc.setEnabled(has_mesh)
-        self.btn_export_inp.setEnabled(has_mesh and has_mat and has_bc)
-        self.btn_run_solver.setEnabled(has_mesh and has_mat and has_bc)
+
+        # 메쉬와 경계조건이 충족되면 해석 및 내보내기 활성화 (물성은 미할당 시 실행 시점에 자동 할당)
+        can_run = has_mesh and has_bc
+        self.btn_export_inp.setEnabled(can_run)
+        self.btn_run_solver.setEnabled(can_run)
+
+        # 2단계 물성 요약 라벨 피드백
+        if has_mesh and not has_mat:
+            self.lbl_mat_summary.setText("⚠️ 물성 미할당 (해석 실행 시 자동 할당 가능)")
+            self.lbl_mat_summary.setStyleSheet("color: #e5c07b; font-size: 10px;")
+
+        # 4단계 해석 상태 피드백 및 툴팁 업데이트
+        if not has_mesh:
+            self.lbl_solver_status.setText("해석 준비: 1단계 [메쉬 생성] 필요")
+            self.lbl_solver_status.setStyleSheet("color: #888899; font-size: 10px;")
+            self.btn_run_solver.setToolTip("1단계 [메쉬 생성]을 먼저 완료해야 합니다.")
+            self.btn_export_inp.setToolTip("1단계 [메쉬 생성]을 먼저 완료해야 합니다.")
+        elif not has_bc:
+            self.lbl_solver_status.setText("⚠️ 3단계 [경계조건 적용 및 검증] 필요")
+            self.lbl_solver_status.setStyleSheet("color: #e5c07b; font-size: 10px;")
+            self.btn_run_solver.setToolTip("3단계 [경계조건 적용 및 검증]을 먼저 완료해야 합니다.")
+            self.btn_export_inp.setToolTip("3단계 [경계조건 적용 및 검증]을 먼저 완료해야 합니다.")
+        elif not has_mat:
+            self.lbl_solver_status.setText("💡 해석 준비 완료 (실행 시 물성 자동 할당)")
+            self.lbl_solver_status.setStyleSheet("color: #61afef; font-size: 10px;")
+            self.btn_run_solver.setToolTip("해석 실행 시 2단계 물성 할당이 자동으로 함께 수행됩니다.")
+            self.btn_export_inp.setToolTip(".inp 저장 시 2단계 물성 할당이 자동으로 함께 수행됩니다.")
+        else:
+            self.lbl_solver_status.setText("✅ 해석 준비 완료 (CalculiX 실행 가능)")
+            self.lbl_solver_status.setStyleSheet("color: #98c379; font-size: 10px;")
+            self.btn_run_solver.setToolTip("CalculiX 유한요소해석을 시작합니다.")
+            self.btn_export_inp.setToolTip("CalculiX 해석용 .inp 데크 파일을 생성합니다.")
 
         # 초기 고정면 Z 기본값 설정 (볼륨 또는 지오메트리 바운드 기준)
         if has_geom and self.spin_fixed_z.value() == 0.0:
@@ -351,6 +445,8 @@ class FeaPanel(QWidget):
             element_type=elem_type,
             ccx_path=self.edit_ccx_path.text() or None,
             n_threads=self.spin_threads.value(),
+            mesh_algorithm_3d=self.combo_mesh_algo.currentData(),
+            optimize_netgen=self.chk_optimize_netgen.isChecked(),
         )
         self.btn_mesh.setEnabled(False)
         self.mesh_progress_bar.setVisible(True)
@@ -457,7 +553,24 @@ class FeaPanel(QWidget):
         if file_path:
             self.edit_ccx_path.setText(file_path)
 
+    def _ensure_material_assigned(self) -> bool:
+        """물성이 할당되지 않은 경우 기본 설정으로 자동 할당 시도"""
+        if self.state_mgr.material_assignment is not None:
+            return True
+        self.lbl_solver_status.setText("물성 자동 할당 중 (CT HU 샘플링)...")
+        self.lbl_solver_status.setStyleSheet("color: #61afef; font-size: 10px;")
+        self.txt_solver_log.appendPlainText("[자동 물성 할당] 2단계 물성 할당을 자동으로 실행합니다...")
+        QApplication.processEvents()
+        mat = self.controller.assign_materials(n_bins=self.spin_bins.value())
+        if mat is None:
+            self.txt_solver_log.appendPlainText("[자동 물성 할당 실패] 물성 할당에 실패하여 중단합니다.")
+            return False
+        self.txt_solver_log.appendPlainText("[자동 물성 할당 완료] CT HU 기반 이종 물성이 성공적으로 할당되었습니다.")
+        return True
+
     def _on_export_inp_clicked(self):
+        if not self._ensure_material_assigned():
+            return
         file_path, _ = QFileDialog.getSaveFileName(self, "CalculiX .inp 저장", "dental_fea_job.inp", "CalculiX Deck (*.inp)")
         if file_path:
             out = self.controller.export_inp(file_path)
@@ -467,6 +580,8 @@ class FeaPanel(QWidget):
     def _on_run_solver_clicked(self):
         self.txt_solver_log.clear()
         self.solver_progress_bar.setValue(0)
+        if not self._ensure_material_assigned():
+            return
         ccx = self.edit_ccx_path.text().strip() or None
         self.controller.start_solver(
             inp_path=None,  # 기본 saved/ 폴더에 자동 생성

@@ -172,3 +172,24 @@ class TestGeometryUIAndExport(unittest.TestCase):
         # 기존 별도 3D 창(VolumeViewerWindow)에는 FEA 액터가 표시되지 않음을 확인
         vol_viewer = VolumeViewerWindow(self.state_mgr)
         self.assertFalse(hasattr(vol_viewer, "fea_cortical_actor"))
+
+    def test_05_geometry_parameter_spinbox_layout(self):
+        """기하 파라미터 그룹 스핀 입력 창 폭 1/2(60px) 축소 및 좌측 정렬 검증"""
+        panel = GeometryPanel(self.state_mgr)
+        panel.resize(260, 800)
+        panel.show()
+        app = QApplication.instance() or QApplication([])
+        app.processEvents()
+
+        # 스핀박스 폭 검증 (117px -> 60px)
+        self.assertEqual(panel.spin_roi_margin.width(), 60)
+        self.assertEqual(panel.spin_smooth.width(), 60)
+        self.assertEqual(panel.spin_target_edge.width(), 60)
+        self.assertEqual(panel.spin_undersize.width(), 60)
+
+        # 좌측 시작 위치 일관성 검증
+        x_pos = panel.spin_roi_margin.x()
+        self.assertEqual(panel.spin_smooth.x(), x_pos)
+        self.assertEqual(panel.spin_target_edge.x(), x_pos)
+        self.assertEqual(panel.spin_undersize.x(), x_pos)
+

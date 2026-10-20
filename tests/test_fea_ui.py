@@ -136,6 +136,88 @@ class TestFeaPanelState:
 
         assert panel.btn_export_inp.isEnabled(), "메쉬, 물성, BC가 모두 존재하면 [.inp 저장] 버튼이 활성화되어야 함"
         assert panel.btn_run_solver.isEnabled(), "메쉬, 물성, BC가 모두 존재하면 [해석 실행] 버튼이 활성화되어야 함"
+        assert "CalculiX 실행 가능" in panel.lbl_solver_status.text()
+
+    def test_smart_activation_when_mesh_and_bc_ready_without_material(self, qapp):
+        """메쉬와 경계조건이 설정되면 물성 미할당 상태여도 해석 실행 버튼이 활성화되어야 함 (스마트 자동 실행)."""
+        state_mgr = StateManager()
+        panel = FeaPanel(state_mgr)
+
+        nodes, elements = create_cube_mesh_c3d4()
+        bone_part = MeshPart(name="bone", nodes=nodes, elements=elements, element_type="C3D4")
+        mesh_model = MeshModel(parts=[bone_part])
+
+        bc = BoundaryConditionSet(
+            fixed_node_sets=[{"name": "FIX", "part": "bone", "node_ids": np.array([0, 1]), "dofs": (1, 3)}],
+            loads=[{"name": "LOAD", "part": "bone", "node_ids": np.array([2, 3]), "force_N": (0.0, 0.0, -100.0)}],
+        )
+
+        state_mgr.set_mesh_model(mesh_model)
+        state_mgr.set_bc_set(bc)
+
+        # 물성은 아직 할당되지 않은 상태
+        assert state_mgr.material_assignment is None
+        assert panel.btn_run_solver.isEnabled(), "메쉬와 BC가 있으면 물성 미할당이어도 스마트 활성화되어야 함"
+        assert panel.btn_export_inp.isEnabled(), "메쉬와 BC가 있으면 .inp 저장도 스마트 활성화되어야 함"
+        assert "자동 할당" in panel.lbl_solver_status.text()
+
+    def test_auto_material_assignment_on_run_solver_clicked(self, qapp, monkeypatch):
+        """물성이 없는 상태에서 _on_run_solver_clicked 호출 시 자동 물성 할당이 수행됨."""
+        state_mgr = StateManager()
+        panel = FeaPanel(state_mgr)
+
+        # 더미 볼륨 및 메쉬 설정
+        vtk_img = create_dummy_vtk_volume(shape=(10, 10, 10))
+        state_mgr.set_volume_data(vtk_img, metadata={"series_path": "dummy"})
+
+        nodes, elements = create_cube_mesh_c3d4()
+        bone_part = MeshPart(name="bone", nodes=nodes, elements=elements, element_type="C3D4")
+        mesh_model = MeshModel(parts=[bone_part])
+        bc = BoundaryConditionSet(
+            fixed_node_sets=[{"name": "FIX", "part": "bone", "node_ids": np.array([0, 1]), "dofs": (1, 3)}],
+            loads=[{"name": "LOAD", "part": "bone", "node_ids": np.array([2, 3]), "force_N": (0.0, 0.0, -100.0)}],
+        )
+
+        state_mgr.set_mesh_model(mesh_model)
+        state_mgr.set_bc_set(bc)
+
+        # start_solver는 실제 ccx를 띄우지 않도록 모킹
+        started = []
+        monkeypatch.setattr(panel.controller, "start_solver", lambda *args, **kwargs: started.append(True))
+
+        assert state_mgr.material_assignment is None
+        panel._on_run_solver_clicked()
+
+        # 물성 할당이 자동 완료되었고 start_solver가 호출되었는지 확인
+        assert state_mgr.material_assignment is not None, "클릭 시 물성 자동 할당이 수행되어야 함"
+        assert len(started) == 1, "물성 할당 후 start_solver가 호출되어야 함"
+
+    def test_mesh_algorithm_and_optimization_ui_options(self, qapp, monkeypatch):
+        """메쉬 생성 UI에서 3D 알고리즘 및 Netgen 최적화 옵션이 AnalysisConfig로 올바르게 전달됨."""
+        state_mgr = StateManager()
+        panel = FeaPanel(state_mgr)
+
+        box_c = trimesh.creation.box(extents=[10, 10, 10])
+        geom = FeaGeometry(cortical=box_c, cancellous=box_c, implant=box_c, report={})
+        state_mgr.set_fea_geometry(geom)
+
+        # UI에서 Netgen 알고리즘 및 옵션 선택
+        idx = panel.combo_mesh_algo.findData("netgen")
+        assert idx != -1
+        panel.combo_mesh_algo.setCurrentIndex(idx)
+        panel.chk_optimize_netgen.setChecked(True)
+
+        captured_config = []
+        monkeypatch.setattr(panel.controller, "start_meshing", lambda cfg: captured_config.append(cfg))
+
+        panel._on_mesh_clicked()
+
+        assert len(captured_config) == 1
+        cfg = captured_config[0]
+        assert cfg.mesh_algorithm_3d == "netgen"
+        assert cfg.optimize_netgen is True
+
+
 
     def test_stale_warning_banner_triggers_on_upstream_change(self, qapp):
         state_mgr = StateManager()
@@ -260,3 +342,59 @@ class TestFeaControllerHeadless:
         worker = MeshWorker(fea_geometry=geom, config=cfg)
         worker.cancel()
         assert worker._is_cancelled
+
+    def test_fea_panel_widget_layout_and_sizes(self, qapp):
+        """사용자 요청에 따른 FEA 패널 위젯 크기 및 위치 조정 검증"""
+        state_mgr = StateManager()
+        panel = FeaPanel(state_mgr)
+        panel.resize(260, 800)
+        panel.show()
+        qapp.processEvents()
+
+        # 1. 메쉬 생성: spin_size_far, spin_size_near 폭 60px (1/2로 축소)
+        assert panel.spin_size_far.width() == 60
+        assert panel.spin_size_near.width() == 60
+        # combo_elem_type은 라벨 고정(52px)으로 좌측(x <= 70)으로 이동
+        assert panel.combo_elem_type.x() <= 70
+
+        # 2. 물성 할당: btn_choose_preset이 lbl_preset_path보다 좌측에 위치하고, 폭은 텍스트 맞춤
+        assert panel.btn_choose_preset.x() < panel.lbl_preset_path.x()
+        assert panel.btn_choose_preset.width() <= 55
+        # spin_bins 폭 60px (1/2로 축소) 및 좌측 x=135 정렬
+        assert panel.spin_bins.width() == 60
+        assert panel.spin_bins.x() == panel.spin_size_far.x()
+
+        # 3. 경계조건: spin_fixed_z 폭 80px (2/3 수준)
+        assert panel.spin_fixed_z.width() == 80
+
+    def test_control_panel_resizable_and_scroll(self, qapp):
+        """ControlPanel이 고정폭이 아닌 유연한 크기 조절 및 가로 스크롤을 지원하는지 검증"""
+        from dental_fea_app.ui.control_panel import ControlPanel
+        state_mgr = StateManager()
+        ctrl = ControlPanel(state_mgr, on_open_3d_viewer=lambda: None)
+
+        assert ctrl.minimumWidth() <= 240
+        assert ctrl.maximumWidth() >= 600
+
+    def test_gmsh_thread_initialization(self):
+        """서브 스레드에서 gmsh.initialize(interruptible=False)가 signal 오류 없이 성공하는지 검증"""
+        import threading
+        import gmsh
+
+        thread_error = []
+
+        def worker_func():
+            try:
+                if not gmsh.isInitialized():
+                    gmsh.initialize(interruptible=False)
+                assert gmsh.isInitialized() == 1
+                gmsh.finalize()
+            except Exception as e:
+                thread_error.append(e)
+
+        th = threading.Thread(target=worker_func)
+        th.start()
+        th.join(timeout=5.0)
+
+        assert len(thread_error) == 0, f"Gmsh thread initialization failed: {thread_error}"
+

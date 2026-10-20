@@ -58,21 +58,34 @@ class MeshWorker(QThread):
             bone_mesh = None
             implant_mesh = None
 
-            if hasattr(self.fea_geometry, "cortical") and hasattr(self.fea_geometry, "cancellous"):
-                # FeaGeometry 인스턴스
+            if hasattr(self.fea_geometry, "bone") and self.fea_geometry.bone is not None and len(getattr(self.fea_geometry.bone, "faces", [])) > 0:
+                bone_mesh = self.fea_geometry.bone
+                implant_mesh = getattr(self.fea_geometry, "implant", None)
+            elif hasattr(self.fea_geometry, "cortical") and hasattr(self.fea_geometry, "cancellous"):
+                # FeaGeometry 인스턴스 (하위 호환)
                 c_mesh = self.fea_geometry.cortical
                 cn_mesh = self.fea_geometry.cancellous
                 i_mesh = getattr(self.fea_geometry, "implant", None)
 
                 # 골 조직: 피질골과 수질골을 결합한 단일 솔리드 구성
-                if c_mesh is not None and cn_mesh is not None:
+                has_cn = cn_mesh is not None and len(getattr(cn_mesh, "faces", [])) > 0
+                if c_mesh is not None and has_cn:
                     try:
-                        bone_mesh = trimesh.boolean.union([c_mesh, cn_mesh], engine="manifold")
+                        import manifold3d as m3d
+                        m1 = m3d.Manifold(c_mesh.vertices, c_mesh.faces)
+                        m2 = m3d.Manifold(cn_mesh.vertices, cn_mesh.faces)
+                        m_u = m1 + m2
+                        mesh_raw = m_u.to_mesh()
+                        bone_mesh = trimesh.Trimesh(mesh_raw.vert_properties[:, :3], mesh_raw.tri_verts, process=True)
                     except Exception:
-                        bone_mesh = trimesh.util.concatenate([c_mesh, cn_mesh])
+                        try:
+                            bone_mesh = trimesh.boolean.union([c_mesh, cn_mesh], engine="manifold")
+                        except Exception:
+                            # 내부 경계면이 남는 concatenate 대신 외곽 피질골을 기본 뼈 체적으로 사용
+                            bone_mesh = c_mesh.copy()
                 elif c_mesh is not None:
                     bone_mesh = c_mesh
-                elif cn_mesh is not None:
+                elif has_cn:
                     bone_mesh = cn_mesh
 
                 implant_mesh = i_mesh
@@ -102,12 +115,17 @@ class MeshWorker(QThread):
                 if self._is_cancelled:
                     return
 
+                algo_3d = getattr(self.config, "mesh_algorithm_3d", "auto")
+                opt_netgen = getattr(self.config, "optimize_netgen", True)
+
                 implant_part = build_part_mesh(
                     name="implant",
                     surface=implant_mesh,
                     size_far=self.config.mesh_size_near_mm,
                     size_near=self.config.mesh_size_near_mm,
                     order=order,
+                    mesh_algorithm_3d=algo_3d,
+                    optimize_netgen=opt_netgen,
                 )
                 parts.append(implant_part)
 
@@ -116,6 +134,9 @@ class MeshWorker(QThread):
             if self._is_cancelled:
                 return
 
+            algo_3d = getattr(self.config, "mesh_algorithm_3d", "auto")
+            opt_netgen = getattr(self.config, "optimize_netgen", True)
+
             bone_part = build_part_mesh(
                 name="bone",
                 surface=bone_mesh,
@@ -123,6 +144,8 @@ class MeshWorker(QThread):
                 size_near=self.config.mesh_size_near_mm,
                 refine_surface=implant_mesh,
                 order=order,
+                mesh_algorithm_3d=algo_3d,
+                optimize_netgen=opt_netgen,
             )
             parts.insert(0, bone_part)
 

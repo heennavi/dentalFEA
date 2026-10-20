@@ -381,14 +381,16 @@ class MainWindow(QMainWindow):
         os.makedirs(base_dir, exist_ok=True)
 
         if not default_path:
-            # 기본 파일명: DICOM 시리즈 이름 또는 timestamp 기반
+            # 기본 파일명: 'DICOM 파일 명' + 날짜_시간
+            from datetime import datetime
+            dt_str = datetime.now().strftime("%Y%m%d_%H%M%S")
             series_p = getattr(self.state_mgr, "series_path", "")
             if series_p:
                 clean_name = os.path.basename(series_p.rstrip("/\\"))
-                def_name = f"{clean_name}_user_info.json"
+                clean_base, _ = os.path.splitext(clean_name)
+                def_name = f"{clean_base}_{dt_str}.json"
             else:
-                from datetime import datetime
-                def_name = f"user_info_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+                def_name = f"user_info_{dt_str}.json"
             default_path = os.path.join(base_dir, def_name)
 
         if prompt_dialog:
@@ -464,7 +466,9 @@ class MainWindow(QMainWindow):
         has_annot = bool(data.get("annotations", {}).get("text", "").strip())
         has_measure = bool(data.get("measurements", []))
         has_shapes = bool(data.get("shapes", []))
-        return has_annot or has_measure or has_shapes
+        has_implants = bool(data.get("implants", []))
+        has_roi = bool(data.get("roi_bounds", None))
+        return has_annot or has_measure or has_shapes or has_implants or has_roi
 
     def closeEvent(self, event):
         """

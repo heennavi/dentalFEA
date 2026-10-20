@@ -32,7 +32,8 @@ class ControlPanel(QWidget):
         super().__init__(parent)
         self.state_mgr = state_manager
         self.on_open_3d_viewer = on_open_3d_viewer
-        self.setFixedWidth(260)
+        self.setMinimumWidth(240)
+        self.setMaximumWidth(600)
 
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(0, 2, 0, 2)
@@ -42,7 +43,7 @@ class ControlPanel(QWidget):
         scroll = QScrollArea(self)
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
 
         container = QWidget()
         layout = QVBoxLayout(container)

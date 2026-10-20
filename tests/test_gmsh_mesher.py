@@ -58,6 +58,27 @@ class TestGmshMesher:
             with pytest.raises(ValueError, match="watertight"):
                 mesh_closed_surface(stl_path, size_far=2.0, size_near=1.0)
 
+    def test_auto_repair_non_watertight(self, cube_10mm):
+        """Verify non-watertight mesh with small holes is auto-repaired and successfully meshed."""
+        # 큐브에서 면 1개 제거하여 non-watertight 상태 생성
+        damaged = cube_10mm.copy()
+        damaged.update_faces(np.arange(len(damaged.faces) - 1))
+        assert not damaged.is_watertight
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            stl_path = os.path.join(tmpdir, "damaged_cube.stl")
+            damaged.export(stl_path)
+
+            nodes, elements = mesh_closed_surface(
+                stl_path=stl_path,
+                size_far=2.5,
+                size_near=2.0,
+                element_order=1
+            )
+            assert len(nodes) > 0
+            assert len(elements) > 0
+
+
     def test_mesh_closed_surface_volume_and_positive_elements(self, cube_10mm, sphere_5mm):
         """
         Verify that tetrahedral mesh volume matches analytic volume within 2%,
@@ -214,3 +235,58 @@ class TestGmshMesher:
         assert part.elements.ndim == 2 and part.elements.shape[1] == 10
         assert len(part.nodes) > 0
         assert len(part.elements) > 0
+
+    def test_mesh_closed_surface_complex_torus(self):
+        """Verify that complex non-convex watertight surface (torus) meshes successfully."""
+        torus = trimesh.creation.torus(major_radius=6.0, minor_radius=2.0)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            torus_stl = os.path.join(tmpdir, "torus.stl")
+            torus.export(torus_stl)
+
+            nodes, elements = mesh_closed_surface(
+                stl_path=torus_stl,
+                size_far=2.0,
+                size_near=1.5,
+                element_order=2,
+            )
+            assert len(nodes) > 0
+            assert len(elements) > 0
+            assert elements.shape[1] == 10
+            vols = compute_tetrahedron_volumes(nodes, elements)
+            assert np.all(vols > 0.0), "All torus elements must have positive volume"
+
+    def test_mesh_algorithm_and_optimization_options(self, cube_10mm):
+        """Verify meshing with specific 3D algorithm (Delaunay/Netgen) and Netgen optimizer."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cube_stl = os.path.join(tmpdir, "cube_opt.stl")
+            cube_10mm.export(cube_stl)
+
+            # 1. Delaunay 알고리즘 및 Netgen 최적화
+            nodes_del, elems_del = mesh_closed_surface(
+                stl_path=cube_stl,
+                size_far=3.0,
+                size_near=2.0,
+                element_order=1,
+                mesh_algorithm_3d="delaunay",
+                optimize_netgen=True,
+            )
+            assert len(nodes_del) > 0
+            assert len(elems_del) > 0
+            assert elems_del.shape[1] == 4
+            vols = compute_tetrahedron_volumes(nodes_del, elems_del)
+            assert np.all(vols > 0.0), "All elements must have positive volume"
+
+            # 2. build_part_mesh 옵션 연계
+            part = build_part_mesh(
+                name="test_part",
+                surface=cube_10mm,
+                size_far=3.0,
+                size_near=2.0,
+                order=1,
+                mesh_algorithm_3d="netgen",
+                optimize_netgen=True,
+            )
+            assert part.element_type == "C3D4"
+            assert len(part.elements) > 0
+
+
