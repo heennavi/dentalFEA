@@ -155,8 +155,9 @@ class FeaPanel(QWidget):
         row_preset = QHBoxLayout()
         row_preset.addWidget(QLabel("프리셋:", group_mat))
         self.btn_choose_preset = QPushButton("선택...", group_mat)
-        btn_preset_w = self.btn_choose_preset.fontMetrics().horizontalAdvance("선택...") + 14
-        self.btn_choose_preset.setFixedWidth(btn_preset_w)
+        self.btn_choose_preset.setStyleSheet("padding: 2px 6px; font-size: 11px;")
+        self.btn_choose_preset.adjustSize()
+        self.btn_choose_preset.setFixedWidth(self.btn_choose_preset.sizeHint().width())
         self.btn_choose_preset.clicked.connect(self._on_choose_preset)
         row_preset.addWidget(self.btn_choose_preset)
 

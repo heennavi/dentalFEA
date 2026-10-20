@@ -2,14 +2,14 @@
   "mpr_views": {
     "Axial": {
       "show_crosshair": true,
-      "show_ruler": true,
+      "show_ruler": false,
       "rotation": 0,
       "flip_h": false,
       "flip_v": false
     },
     "Coronal": {
       "show_crosshair": true,
-      "show_ruler": true,
+      "show_ruler": false,
       "rotation": 0,
       "flip_h": false,
       "flip_v": false
