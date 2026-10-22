@@ -26,6 +26,7 @@ class StateManager(QObject):
     roi_bounds_changed = Signal(object)                 # (xmin, xmax, ymin, ymax, zmin, zmax) or None
     roi_setting_mode_toggled = Signal(bool)             # True: 2D 사각형 그리기 모드, False: 일반 모드
     roi_box_visibility_changed = Signal(bool)           # 3D 파란색 Bounding Box 가시성
+    bc_fix_drawing_mode_toggled = Signal(bool)          # True: 경계조건 고정면 2D 사각형 그리기 모드, False: 해제
 
     # 2D 인터랙션 모드 ('normal', 'draw', 'measure_length', 'measure_angle')
     interaction_mode_changed = Signal(str)
@@ -119,6 +120,7 @@ class StateManager(QObject):
         self._ties = []
         self._last_frd_path: Optional[str] = None
         self._fea_is_stale: bool = False
+        self._bc_fix_box: Optional[Tuple[float, float, float, float, float, float]] = None
 
         # 상류 데이터 변경 시 FEA 무효화 연결
         self.implant_pose_changed.connect(lambda *_: self.invalidate_fea_pipeline())
@@ -253,6 +255,17 @@ class StateManager(QObject):
     def set_bc_set(self, bc):
         self._bc_set = bc
         self.bc_set_changed.emit(self._bc_set)
+
+    @property
+    def bc_fix_box(self) -> Optional[Tuple[float, float, float, float, float, float]]:
+        return self._bc_fix_box
+
+    @bc_fix_box.setter
+    def bc_fix_box(self, box: Optional[Tuple[float, float, float, float, float, float]]):
+        self._bc_fix_box = box
+
+    def set_bc_fix_box(self, box: Optional[Tuple[float, float, float, float, float, float]]):
+        self._bc_fix_box = box
 
     @property
     def ties(self):

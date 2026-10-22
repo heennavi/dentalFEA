@@ -28,6 +28,7 @@ from material.bone_mapping import (
 )
 from fea.boundary_conditions import (
     fix_by_plane,
+    fix_by_region,
     load_from_angle,
     default_load_presets,
     validate_bc,
@@ -97,6 +98,12 @@ class FeaController(QObject):
             self.meshing_error.emit("이미 메쉬 생성이 진행 중입니다.")
             return
 
+        # 메쉬 재생성 시 기존 물성, 경계조건, 해석 결과 등 하류 데이터 즉시 제거
+        self.state_mgr.set_material_assignment(None)
+        self.state_mgr.set_bc_set(None)
+        self.state_mgr.set_last_frd_path(None)
+        self.state_mgr.set_bc_fix_box(None)
+
         self.mesh_worker = MeshWorker(
             fea_geometry=geom,
             config=config,
@@ -114,6 +121,12 @@ class FeaController(QObject):
             self.mesh_worker.cancel()
 
     def _on_meshing_finished(self, mesh_model: MeshModel, ties: List[TieDef], q_report: str):
+        # 신규 체적 메쉬 등록 시 기존 물성/경계조건/해석 결과 확실히 초기화
+        self.state_mgr.set_material_assignment(None)
+        self.state_mgr.set_bc_set(None)
+        self.state_mgr.set_last_frd_path(None)
+        self.state_mgr.set_bc_fix_box(None)
+
         self.state_mgr.set_mesh_model(mesh_model)
         self.state_mgr.set_ties(ties)
         self.meshing_finished.emit(q_report)
@@ -216,15 +229,19 @@ class FeaController(QObject):
 
     def setup_boundary_conditions(
         self,
-        bottom_z: float,
+        bottom_z: Optional[float] = None,
         load_preset_key: str = "axial_100N",
         load_mag: Optional[float] = None,
         load_angle: Optional[float] = None,
         load_azimuth: Optional[float] = None,
         top_margin_mm: float = 2.0,
+        fix_mode: str = "z_plane",
+        fix_box: Optional[Tuple[float, float, float, float, float, float]] = None,
+        load_position: Optional[Tuple[float, float, float]] = None,
+        load_direction: Optional[Tuple[float, float, float]] = None,
     ) -> List[str]:
         """
-        Configure bottom fixation constraint and occlusal force load.
+        Configure bottom/region fixation constraint and occlusal force load.
         """
         mesh_model = self.state_mgr.mesh_model
         if mesh_model is None:
@@ -239,16 +256,32 @@ class FeaController(QObject):
             return [err]
 
         try:
-            # 1. 하단 절제면 완전 고정
-            fix_dict = fix_by_plane(
-                part=bone_part,
-                plane_point=(0.0, 0.0, float(bottom_z)),
-                plane_normal=(0.0, 0.0, 1.0),
-                side="below",
-                tol_mm=0.5,
-                dofs=(1, 3),
-                name="FIX_MANDIBLE_BASE",
-            )
+            # 1. 고정면 설정 (Z-축 평면 또는 육면체 축 지정 영역)
+            if fix_mode == "box" and fix_box is not None:
+                x0, x1, y0, y1, z0, z1 = fix_box
+                def _in_box_predicate(pts: np.ndarray) -> np.ndarray:
+                    return (
+                        (pts[:, 0] >= x0 - 0.5) & (pts[:, 0] <= x1 + 0.5) &
+                        (pts[:, 1] >= y0 - 0.5) & (pts[:, 1] <= y1 + 0.5) &
+                        (pts[:, 2] >= z0 - 0.5) & (pts[:, 2] <= z1 + 0.5)
+                    )
+                fix_dict = fix_by_region(
+                    part=bone_part,
+                    predicate=_in_box_predicate,
+                    dofs=(1, 3),
+                    name="FIX_MANDIBLE_REGION",
+                )
+            else:
+                bz = bottom_z if bottom_z is not None else 0.0
+                fix_dict = fix_by_plane(
+                    part=bone_part,
+                    plane_point=(0.0, 0.0, float(bz)),
+                    plane_normal=(0.0, 0.0, 1.0),
+                    side="below",
+                    tol_mm=0.5,
+                    dofs=(1, 3),
+                    name="FIX_MANDIBLE_BASE",
+                )
 
             # 2. 상단 하중 면/절점 선택
             presets = default_load_presets()
@@ -264,18 +297,42 @@ class FeaController(QObject):
                 target_part = bone_part
 
             nodes = target_part.nodes
-            max_z = float(np.max(nodes[:, 2]))
-            top_threshold = max_z - max(0.5, float(top_margin_mm))
 
-            top_node_mask = nodes[:, 2] >= top_threshold
-            load_node_ids = np.where(top_node_mask)[0].astype(np.int64)
+            if load_position is not None:
+                # 지정된 load_position 근처의 절점 탐색 (반경 3mm 이내 절점, 없으면 가장 가까운 5개 절점)
+                pos_arr = np.array(load_position, dtype=np.float64)
+                dists = np.linalg.norm(nodes - pos_arr, axis=1)
+                near_mask = dists <= max(1.5, float(top_margin_mm))
+                if np.any(near_mask):
+                    load_node_ids = np.where(near_mask)[0].astype(np.int64)
+                else:
+                    load_node_ids = np.argsort(dists)[:max(1, min(5, len(nodes)))].astype(np.int64)
+            else:
+                max_z = float(np.max(nodes[:, 2]))
+                top_threshold = max_z - max(0.5, float(top_margin_mm))
+                top_node_mask = nodes[:, 2] >= top_threshold
+                load_node_ids = np.where(top_node_mask)[0].astype(np.int64)
 
-            fx, fy, fz = load_from_angle(
-                magnitude_N=mag,
-                axis_direction=(0.0, 0.0, -1.0),
-                tilt_deg=angle,
-                tilt_azimuth_deg=azimuth,
-            )
+            if load_direction is not None:
+                ld = np.array(load_direction, dtype=np.float64)
+                norm_ld = np.linalg.norm(ld)
+                if norm_ld > 1e-6:
+                    ld = ld / norm_ld
+                    fx, fy, fz = tuple(float(f) for f in ld * mag)
+                else:
+                    fx, fy, fz = load_from_angle(
+                        magnitude_N=mag,
+                        axis_direction=(0.0, 0.0, -1.0),
+                        tilt_deg=angle,
+                        tilt_azimuth_deg=azimuth,
+                    )
+            else:
+                fx, fy, fz = load_from_angle(
+                    magnitude_N=mag,
+                    axis_direction=(0.0, 0.0, -1.0),
+                    tilt_deg=angle,
+                    tilt_azimuth_deg=azimuth,
+                )
 
 
             load_dict = {

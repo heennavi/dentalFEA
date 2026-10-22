@@ -83,6 +83,7 @@ class MPRWidget(QWidget):
 
         # ROI 설정 모드 및 사각형 액터 (Orange, 두께 2)
         self._is_roi_setting_mode = False
+        self._is_bc_fix_mode = False
         self._roi_rect_start: Optional[Tuple[float, float, float]] = None
         self._init_roi_rect_actor()
 
@@ -116,6 +117,7 @@ class MPRWidget(QWidget):
         self.state_mgr.window_level_changed.connect(self.on_window_level_changed)
         self.state_mgr.volume_loaded.connect(self.on_volume_loaded)
         self.state_mgr.roi_setting_mode_toggled.connect(self._on_roi_mode_toggled)
+        self.state_mgr.bc_fix_drawing_mode_toggled.connect(self._on_bc_fix_mode_toggled)
         self.state_mgr.interaction_mode_changed.connect(self._on_interaction_mode_changed)
         self.state_mgr.segmentation_result_changed.connect(self._on_segmentation_result_changed)
         self.state_mgr.segmentation_visibility_changed.connect(self._on_segmentation_visibility_changed)
@@ -493,11 +495,17 @@ class MPRWidget(QWidget):
         self.render()
 
     def _on_roi_mode_toggled(self, enabled: bool):
-
         self._is_roi_setting_mode = enabled
         self._roi_rect_start = None
         if not enabled:
             # 설정 모드가 끝나면 그려진 2D 사각형은 사라짐
+            self.roi_rect_actor.SetVisibility(False)
+            self.render()
+
+    def _on_bc_fix_mode_toggled(self, enabled: bool):
+        self._is_bc_fix_mode = enabled
+        self._roi_rect_start = None
+        if not enabled:
             self.roi_rect_actor.SetVisibility(False)
             self.render()
 
@@ -1405,8 +1413,8 @@ class MPRWidget(QWidget):
             if not w_pt:
                 return
 
-            if self._is_roi_setting_mode:
-                # ROI boundary 설정 모드
+            if self._is_roi_setting_mode or self._is_bc_fix_mode:
+                # ROI 또는 경계조건 고정면 사각형 그리기 모드
                 self._roi_rect_start = w_pt
                 self.roi_rect_actor.SetVisibility(False)
 
@@ -1560,7 +1568,7 @@ class MPRWidget(QWidget):
                 self._last_mouse_pos = pos
                 return
 
-            if self._is_roi_setting_mode and self._roi_rect_start and w_pt:
+            if (self._is_roi_setting_mode or self._is_bc_fix_mode) and self._roi_rect_start and w_pt:
                 self._draw_roi_rect(self._roi_rect_start, w_pt)
 
             elif self.interaction_mode == "draw" and self.draw_start_pt and w_pt:
@@ -1672,6 +1680,12 @@ class MPRWidget(QWidget):
                 self._commit_roi_bounds(self._roi_rect_start, w_pt)
                 self._roi_rect_start = None
                 self.roi_rect_actor.SetVisibility(False)
+                self.render()
+
+            elif self._is_bc_fix_mode and self._roi_rect_start and w_pt:
+                self._commit_bc_fix_bounds(self._roi_rect_start, w_pt)
+                self._roi_rect_start = None
+                # 사각형은 사용자가 '현재 고정위치 복사'를 누를 때까지 유지
                 self.render()
 
             elif self.interaction_mode == "draw" and self.draw_start_pt and w_pt:
@@ -1814,6 +1828,31 @@ class MPRWidget(QWidget):
 
         if (new_bounds[1] - new_bounds[0] > 0.5) and (new_bounds[3] - new_bounds[2] > 0.5) and (new_bounds[5] - new_bounds[4] > 0.5):
             self.state_mgr.set_roi_bounds(new_bounds)
+
+    def _commit_bc_fix_bounds(self, pt1: Tuple[float, float, float], pt2: Tuple[float, float, float]):
+        """그린 2D 사각형과 CT 전체 길이를 결합한 육면체 Bounding Box 산출 및 StateManager에 저장"""
+        bounds = getattr(self.state_mgr, "bounds", None)
+        if bounds is None or len(bounds) != 6:
+            bounds = (-100.0, 100.0, -100.0, 100.0, -100.0, 100.0)
+        bx0, bx1, by0, by1, bz0, bz1 = bounds
+
+        x_min, x_max = min(pt1[0], pt2[0]), max(pt1[0], pt2[0])
+        y_min, y_max = min(pt1[1], pt2[1]), max(pt1[1], pt2[1])
+        z_min, z_max = min(pt1[2], pt2[2]), max(pt1[2], pt2[2])
+
+        if self.axis == AXIS_AXIAL:
+            # Axial(Z)에서 사각형을 그리면 Z-축 방향은 CT 전체 Z-축 방향과 크기가 같은 길이로 인식
+            fix_box = (x_min, x_max, y_min, y_max, bz0, bz1)
+        elif self.axis == AXIS_CORONAL:
+            # Coronal(Y)에서 사각형을 그리면 Y-축 방향은 CT 전체 Y-축 길이로 인식
+            fix_box = (x_min, x_max, by0, by1, z_min, z_max)
+        elif self.axis == AXIS_SAGITTAL:
+            # Sagittal(X)에서 사각형을 그리면 X-축 방향은 CT 전체 X-축 길이로 인식
+            fix_box = (bx0, bx1, y_min, y_max, z_min, z_max)
+        else:
+            return
+
+        self.state_mgr.set_bc_fix_box(fix_box)
 
 
     def _handle_wheel(self, event):

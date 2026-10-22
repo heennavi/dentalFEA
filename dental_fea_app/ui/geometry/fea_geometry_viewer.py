@@ -12,13 +12,14 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QFrame, QToolButton, QStackedLayout
 )
-from PySide6.QtCore import Qt, QSize
+from PySide6.QtCore import Qt, QSize, QEvent
 
 from dental_fea_app.core.state_manager import StateManager
 from dental_fea_app.geometry.surface_extract import trimesh_to_vtk_polydata
 from dental_fea_app.geometry.boolean_ops import FeaGeometry
 from dental_fea_app.ui.icons import IconFactory
-
+from dental_fea_app.ui.geometry.occlusal_load_gizmo import OcclusalLoadGizmo
+import math
 
 class FeaGeometryViewWidget(QWidget):
     """
@@ -66,6 +67,18 @@ class FeaGeometryViewWidget(QWidget):
                 border-color: #61afef;
             }
         """
+        # 교합하중 보기/감추기 체크 버튼(아이콘)
+        self.btn_toggle_load = QToolButton(header)
+        self.btn_toggle_load.setCheckable(True)
+        self.btn_toggle_load.setChecked(False)
+        self.btn_toggle_load.setIcon(IconFactory.visibility_eye(False, 20))
+        self.btn_toggle_load.setIconSize(QSize(18, 18))
+        self.btn_toggle_load.setFixedSize(26, 24)
+        self.btn_toggle_load.setToolTip("교합하중 화살표 보기/감추기")
+        self.btn_toggle_load.setStyleSheet(btn_qss)
+        self.btn_toggle_load.toggled.connect(self._on_toggle_load_visibility)
+        header_layout.addWidget(self.btn_toggle_load)
+
         self.btn_reset_cam = QToolButton(header)
         self.btn_reset_cam.setIcon(IconFactory.reset_view(22))
         self.btn_reset_cam.setIconSize(QSize(18, 18))
@@ -99,13 +112,23 @@ class FeaGeometryViewWidget(QWidget):
 
         layout.addWidget(self.render_container, stretch=1)
 
-        # 3. VTK 렌더러 및 카메라 인터랙터 설정
+        # 3. VTK 렌더러 및 카메라 인터랙터 설정 (Layer 0: 메인 기하, Layer 1: 기즈모 전용 오버레이)
+        rw = self.vtkWidget.GetRenderWindow()
+        rw.SetNumberOfLayers(2)
+
         self.renderer = vtk.vtkRenderer()
+        self.renderer.SetLayer(0)
         self.renderer.SetBackground(0.08, 0.08, 0.10)
         self.renderer.SetBackground2(0.14, 0.14, 0.18)
         self.renderer.SetGradientBackground(True)
+        rw.AddRenderer(self.renderer)
 
-        self.vtkWidget.GetRenderWindow().AddRenderer(self.renderer)
+        self.gizmo_renderer = vtk.vtkRenderer()
+        self.gizmo_renderer.SetLayer(1)
+        self.gizmo_renderer.SetActiveCamera(self.renderer.GetActiveCamera())
+        self.gizmo_renderer.EraseOff()
+        self.gizmo_renderer.SetInteractive(0)
+        rw.AddRenderer(self.gizmo_renderer)
 
         style = vtk.vtkInteractorStyleTrackballCamera()
         self.vtkWidget.SetInteractorStyle(style)
@@ -191,6 +214,13 @@ class FeaGeometryViewWidget(QWidget):
         self.mesh_actors = {}
         self.mesh_mappers = {}
         self.bc_actors = []
+
+        # 5. 교합 하중 3D 기즈모 및 화살표 (오버레이 렌더러에 배치하여 뼈 메쉬에 가려지지 않음)
+        self.load_gizmo = OcclusalLoadGizmo(self.gizmo_renderer)
+        self.on_load_params_changed_callback = None  # UI 동기화 콜백
+
+        # Qt 이벤트 필터를 통한 3D 기즈모 인터랙션 감지 (SetAbortEvent 오류 원천 차단)
+        self.vtkWidget.installEventFilter(self)
 
 
     def _on_fea_geometry_changed(self, fea_geom: Optional[FeaGeometry]):
@@ -531,4 +561,159 @@ class FeaGeometryViewWidget(QWidget):
                 self.bc_actors.append(actor_load)
 
         self.render()
+
+    def _on_toggle_load_visibility(self, visible: bool):
+        """교합 하중 보기/감추기 토글 슬롯"""
+        self.btn_toggle_load.setIcon(IconFactory.visibility_eye(visible, 20))
+        self.load_gizmo.set_visibility(visible)
+        self.render()
+
+    def set_load_gizmo_visible(self, visible: bool):
+        self.btn_toggle_load.blockSignals(True)
+        self.btn_toggle_load.setChecked(visible)
+        self.btn_toggle_load.setIcon(IconFactory.visibility_eye(visible, 20))
+        self.btn_toggle_load.blockSignals(False)
+        self.load_gizmo.set_visibility(visible)
+        self.render()
+
+    def recreate_load_gizmo(self, magnitude_N: Optional[float] = None, tilt_deg: Optional[float] = None):
+        """이전 화살표를 제거하고 새로운 화살표를 생성 (이전 힘과 각도 유지)"""
+        if self.load_gizmo is not None:
+            if magnitude_N is None:
+                magnitude_N = self.load_gizmo.magnitude_N
+            if tilt_deg is None:
+                tilt_deg = self.load_gizmo.tilt_deg
+            self.load_gizmo.cleanup()
+
+        self.load_gizmo = OcclusalLoadGizmo(self.gizmo_renderer)
+        if magnitude_N is not None:
+            self.load_gizmo.magnitude_N = float(magnitude_N)
+        if tilt_deg is not None:
+            self.load_gizmo.tilt_deg = float(tilt_deg)
+        self.set_load_gizmo_visible(True)
+
+    def _get_target_nodes(self) -> Optional[np.ndarray]:
+        """임플란트 파트의 절점 좌표 반환 (없으면 골 최상단)"""
+        mesh_model = getattr(self.state_mgr, "mesh_model", None)
+        if mesh_model is not None:
+            part = mesh_model.get_part("implant") or mesh_model.get_part("bone")
+            if part is not None:
+                return part.nodes
+        geom = getattr(self.state_mgr, "fea_geometry", None)
+        if geom is not None and geom.implant is not None:
+            return np.array(geom.implant.vertices, dtype=np.float64)
+        return None
+
+    def _get_implant_top_position(self) -> Optional[np.ndarray]:
+        """식립된 첫 번째 임플란트의 상단 플랫폼 중심점 (World LPS mm) 반환"""
+        if hasattr(self.state_mgr, "implant_placement_mgr") and self.state_mgr.implant_placement_mgr.implants:
+            imp = next(iter(self.state_mgr.implant_placement_mgr.implants.values()))
+            half_len = imp.spec.length_mm / 2.0
+            tf = vtk.vtkTransform()
+            tf.PostMultiply()
+            tf.Translate(0.0, 0.0, -half_len)
+            tf.RotateZ(imp.orientation[0])
+            tf.RotateX(imp.orientation[1])
+            tf.RotateY(imp.orientation[2])
+            tf.Translate(imp.position[0], imp.position[1], imp.position[2])
+
+            if imp.prosthetic and imp.abutment:
+                total_h = imp.spec.length_mm + imp.abutment.collar_height_mm + imp.prosthetic.length_mm
+                top_pt = tf.TransformPoint(0.0, 0.0, total_h)
+                return np.array(top_pt, dtype=np.float64)
+            elif imp.abutment:
+                total_h = imp.spec.length_mm + imp.abutment.collar_height_mm
+                top_pt = tf.TransformPoint(0.0, 0.0, total_h)
+                return np.array(top_pt, dtype=np.float64)
+            else:
+                top_pt = tf.TransformPoint(0.0, 0.0, imp.spec.length_mm)
+                return np.array(top_pt, dtype=np.float64)
+
+        nodes = self._get_target_nodes()
+        if nodes is not None and len(nodes) > 0:
+            max_idx = int(np.argmax(nodes[:, 2]))
+            return np.copy(nodes[max_idx])
+        return None
+
+    def _get_implant_axis(self) -> np.ndarray:
+        """식립된 첫 번째 임플란트의 장축 하향 벡터 (상부->하부, World LPS)"""
+        if hasattr(self.state_mgr, "implant_placement_mgr") and self.state_mgr.implant_placement_mgr.implants:
+            imp = next(iter(self.state_mgr.implant_placement_mgr.implants.values()))
+            rot_tf = vtk.vtkTransform()
+            rot_tf.PostMultiply()
+            rot_tf.RotateZ(imp.orientation[0])
+            rot_tf.RotateX(imp.orientation[1])
+            rot_tf.RotateY(imp.orientation[2])
+            axis = np.array(rot_tf.TransformVector(0.0, 0.0, -1.0))
+            norm = np.linalg.norm(axis)
+            if norm > 1e-6:
+                return axis / norm
+        return np.array([0.0, 0.0, -1.0])
+
+    def eventFilter(self, obj, event):
+        """마우스 클릭 및 드래그를 가로채 교합하중 3D 기즈모 인터랙션 처리"""
+        if obj == self.vtkWidget and self.load_gizmo.is_visible:
+            etype = event.type()
+            if etype == QEvent.Type.MouseButtonPress and event.button() == Qt.MouseButton.LeftButton:
+                pos = event.position().toPoint()
+                self._left_press_pos = pos
+                screen_x = pos.x()
+                screen_y = self.vtkWidget.height() - pos.y()
+
+                hit = self.load_gizmo.pick(screen_x, screen_y, self.gizmo_renderer)
+                if hit == "arrow":
+                    # 화살표 클릭 -> 3D 기즈모 핸들 생성!
+                    self.load_gizmo.set_gizmo_handles_visible(True)
+                    self.render()
+                    return True
+                elif hit in ("tx", "ty", "tz", "rx", "ry", "rz", "rot"):
+                    # 기즈모 핸들 클릭 -> 드래그 모드 진입 (카메라 조작 방지)
+                    self.load_gizmo.start_drag(hit, screen_x, screen_y)
+                    return True
+
+            elif etype == QEvent.Type.MouseMove:
+                # 드래그 중일 때: 축 구속 이동 또는 회전 각도 갱신
+                if self.load_gizmo.is_dragging:
+                    pos = event.position().toPoint()
+                    screen_x = pos.x()
+                    screen_y = self.vtkWidget.height() - pos.y()
+                    snap_pts = self._get_target_nodes()
+                    ref_axis = self._get_implant_axis()
+                    if self.load_gizmo.update_drag(screen_x, screen_y, self.gizmo_renderer, snap_pts, ref_axis):
+                        if self.on_load_params_changed_callback:
+                            self.on_load_params_changed_callback(self.load_gizmo.tilt_deg)
+                        self.render()
+                    return True
+                elif self.load_gizmo.is_selected:
+                    # 마우스 호버 시 핸들 밝기 강조 (카메라 이벤트는 가로채지 않고 패스)
+                    pos = event.position().toPoint()
+                    screen_x = pos.x()
+                    screen_y = self.vtkWidget.height() - pos.y()
+                    hover_hit = self.load_gizmo.pick(screen_x, screen_y, self.gizmo_renderer)
+                    if hover_hit in ("tx", "ty", "tz", "rx", "ry", "rz", "rot"):
+                        self.load_gizmo.highlight_handle(hover_hit)
+                        self.render()
+                    else:
+                        self.load_gizmo.highlight_handle(None)
+                        self.render()
+
+            elif etype == QEvent.Type.MouseButtonRelease and event.button() == Qt.MouseButton.LeftButton:
+                if self.load_gizmo.is_dragging:
+                    self.load_gizmo.end_drag()
+                    self.render()
+                    return True
+                elif hasattr(self, "_left_press_pos") and self._left_press_pos is not None:
+                    pos = event.position().toPoint()
+                    move_dist = (pos - self._left_press_pos).manhattanLength()
+                    self._left_press_pos = None
+                    if move_dist < 4:
+                        # 화면 회전/드래그가 아닌 빈 곳을 순수하게 클릭했을 때만 기즈모 핸들 숨김
+                        screen_x = pos.x()
+                        screen_y = self.vtkWidget.height() - pos.y()
+                        hit = self.load_gizmo.pick(screen_x, screen_y, self.gizmo_renderer)
+                        if hit is None and self.load_gizmo.is_selected:
+                            self.load_gizmo.set_gizmo_handles_visible(False)
+                            self.render()
+
+        return super().eventFilter(obj, event)
 

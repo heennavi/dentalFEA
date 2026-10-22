@@ -732,4 +732,185 @@ class IconFactory:
         painter.end()
         return QIcon(pixmap)
 
+    @classmethod
+    def occlusal_load(cls, size: int = 22, color: QColor = None) -> QIcon:
+        """교합 하중(타깃 및 아래 방향 하중 화살표) 벡터 아이콘"""
+        color = color or QColor(235, 80, 80)
+        pixmap, painter = cls._create_canvas(size)
+        pen = QPen(color, 2.0, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
+        painter.setPen(pen)
+
+        # 상단에서 아래로 향하는 화살표 축
+        cx = size / 2.0
+        painter.drawLine(QPointF(cx, 3), QPointF(cx, size - 6))
+
+        # 화살촉 (아래 방향)
+        arrow = QPainterPath()
+        arrow.moveTo(cx, size - 3)
+        arrow.lineTo(cx - 4.5, size - 8.5)
+        arrow.lineTo(cx + 4.5, size - 8.5)
+        arrow.closeSubpath()
+        painter.fillPath(arrow, QBrush(color))
+
+        # 상단 타깃 바
+        painter.drawLine(QPointF(cx - 5.0, 3), QPointF(cx + 5.0, 3))
+
+        painter.end()
+        return QIcon(pixmap)
+
+    @classmethod
+    def visibility_eye(cls, visible: bool = True, size: int = 20, color: QColor = None) -> QIcon:
+        """가시성 보기/감추기 눈동자 아이콘"""
+        color = color or (cls.COLOR_ACCENT if visible else QColor(130, 130, 140))
+        pixmap, painter = cls._create_canvas(size)
+        pen = QPen(color, 1.8, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
+        painter.setPen(pen)
+
+        # 눈 윤곽 (상/하 호)
+        cx, cy = size / 2.0, size / 2.0
+        eye_path = QPainterPath()
+        eye_path.moveTo(3, cy)
+        eye_path.quadTo(QPointF(cx, cy - 5.5), QPointF(size - 3, cy))
+        eye_path.quadTo(QPointF(cx, cy + 5.5), QPointF(3, cy))
+        painter.drawPath(eye_path)
+
+        # 눈동자 (원)
+        if visible:
+            painter.setBrush(QBrush(color))
+            painter.drawEllipse(QPointF(cx, cy), 2.8, 2.8)
+        else:
+            # 사선 긋기
+            painter.drawLine(QPointF(4, size - 4), QPointF(size - 4, 4))
+
+        painter.end()
+        return QIcon(pixmap)
+
+    @classmethod
+    def app_icon(cls, size: int = 256) -> QIcon:
+        """치과 임플란트 생체역학 및 FEA 유한요소해석을 상징하는 대표 애플리케이션 아이콘 생성"""
+        import os
+        from PySide6.QtGui import QLinearGradient
+
+        icon = QIcon()
+
+        # resources/app_icon.png 파일이 존재하면 기본 추가
+        res_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "resources", "app_icon.png")
+        if os.path.exists(res_path):
+            icon.addFile(res_path)
+
+        # 다중 해상도(16, 32, 48, 64, 128, 256) 벡터 직접 렌더링
+        for s in (16, 32, 48, 64, 128, 256):
+            pixmap = QPixmap(s, s)
+            pixmap.fill(Qt.GlobalColor.transparent)
+            p = QPainter(pixmap)
+            p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            scale = s / 256.0
+
+            # 1. 다크 스퀴클 배경
+            bg = QPainterPath()
+            bg.addRoundedRect(QRectF(10 * scale, 10 * scale, 236 * scale, 236 * scale), 48 * scale, 48 * scale)
+            grad = QLinearGradient(0, 0, 0, 256 * scale)
+            grad.setColorAt(0.0, QColor(28, 34, 46))
+            grad.setColorAt(1.0, QColor(14, 18, 26))
+            p.fillPath(bg, QBrush(grad))
+            p.setPen(QPen(QColor(70, 140, 240, 180), max(1.0, 3.0 * scale)))
+            p.drawPath(bg)
+
+            # 2. 치아 치관(Crown) 실루엣 + FEA 응력 그라데이션
+            tooth = QPainterPath()
+            tooth.moveTo(60 * scale, 110 * scale)
+            tooth.cubicTo(55 * scale, 70 * scale, 85 * scale, 52 * scale, 110 * scale, 55 * scale)
+            tooth.cubicTo(120 * scale, 56 * scale, 125 * scale, 62 * scale, 128 * scale, 62 * scale)
+            tooth.cubicTo(131 * scale, 62 * scale, 136 * scale, 56 * scale, 146 * scale, 55 * scale)
+            tooth.cubicTo(171 * scale, 52 * scale, 201 * scale, 70 * scale, 196 * scale, 110 * scale)
+            tooth.cubicTo(192 * scale, 125 * scale, 180 * scale, 132 * scale, 160 * scale, 135 * scale)
+            tooth.lineTo(96 * scale, 135 * scale)
+            tooth.cubicTo(76 * scale, 132 * scale, 64 * scale, 125 * scale, 60 * scale, 110 * scale)
+            tooth.closeSubpath()
+
+            stress_grad = QLinearGradient(60 * scale, 55 * scale, 196 * scale, 135 * scale)
+            stress_grad.setColorAt(0.0, QColor(235, 70, 70, 230))   # 빨강
+            stress_grad.setColorAt(0.3, QColor(245, 175, 40, 220))  # 주황/노랑
+            stress_grad.setColorAt(0.65, QColor(60, 200, 120, 210)) # 초록
+            stress_grad.setColorAt(1.0, QColor(50, 140, 240, 220))  # 파랑
+            p.fillPath(tooth, QBrush(stress_grad))
+            p.setPen(QPen(QColor(255, 255, 255, 210), max(0.8, 2.0 * scale)))
+            p.drawPath(tooth)
+
+            # 메쉬 와이어프레임 라인 (32px 이상일 때)
+            if s >= 32:
+                mesh_pen = QPen(QColor(255, 255, 255, 100), max(0.6, 1.2 * scale))
+                p.setPen(mesh_pen)
+                pts = [
+                    (60, 110), (85, 80), (110, 55), (128, 62), (146, 55), (171, 80), (196, 110),
+                    (96, 110), (128, 95), (160, 110), (96, 135), (128, 135), (160, 135)
+                ]
+                edges = [
+                    (0, 1), (1, 2), (2, 3), (3, 4), (4, 5), (5, 6),
+                    (0, 7), (1, 7), (2, 8), (3, 8), (4, 8), (5, 9), (6, 9),
+                    (7, 8), (8, 9), (7, 10), (8, 11), (9, 12), (10, 11), (11, 12)
+                ]
+                for i1, i2 in edges:
+                    p.drawLine(QPointF(pts[i1][0] * scale, pts[i1][1] * scale),
+                               QPointF(pts[i2][0] * scale, pts[i2][1] * scale))
+
+            # 3. 임플란트 픽스처 (하단 지대주 및 나사산 구조)
+            fixture = QPainterPath()
+            fixture.moveTo(105 * scale, 135 * scale)
+            fixture.lineTo(151 * scale, 135 * scale)
+            fixture.lineTo(145 * scale, 150 * scale)
+            fixture.lineTo(111 * scale, 150 * scale)
+            fixture.closeSubpath()
+            p.fillPath(fixture, QBrush(QColor(210, 220, 235)))
+
+            thread_pts = [
+                (111, 150), (145, 150),
+                (148, 158), (142, 163),
+                (145, 171), (139, 176),
+                (142, 184), (136, 189),
+                (139, 197), (133, 202),
+                (134, 210), (122, 218), (122, 210),
+                (123, 202), (117, 197),
+                (120, 189), (114, 184),
+                (117, 176), (111, 171),
+                (114, 163), (108, 158)
+            ]
+            imp_grad = QLinearGradient(100 * scale, 135 * scale, 160 * scale, 220 * scale)
+            imp_grad.setColorAt(0.0, QColor(190, 205, 225))
+            imp_grad.setColorAt(0.5, QColor(130, 145, 165))
+            imp_grad.setColorAt(1.0, QColor(85, 100, 120))
+
+            f_path = QPainterPath()
+            f_path.moveTo(thread_pts[0][0] * scale, thread_pts[0][1] * scale)
+            for x, y in thread_pts[1:]:
+                f_path.lineTo(x * scale, y * scale)
+            f_path.closeSubpath()
+
+            p.fillPath(f_path, QBrush(imp_grad))
+            p.setPen(QPen(QColor(230, 240, 255, 200), max(0.8, 1.8 * scale)))
+            p.drawPath(f_path)
+
+            # 4. 상단 교합 하중 화살표
+            arrow = QPainterPath()
+            arrow.moveTo(128 * scale, 48 * scale)
+            arrow.lineTo(121 * scale, 34 * scale)
+            arrow.lineTo(125 * scale, 34 * scale)
+            arrow.lineTo(125 * scale, 20 * scale)
+            arrow.lineTo(131 * scale, 20 * scale)
+            arrow.lineTo(131 * scale, 34 * scale)
+            arrow.lineTo(135 * scale, 34 * scale)
+            arrow.closeSubpath()
+
+            arrow_grad = QLinearGradient(128 * scale, 20 * scale, 128 * scale, 48 * scale)
+            arrow_grad.setColorAt(0.0, QColor(255, 120, 50))
+            arrow_grad.setColorAt(1.0, QColor(255, 50, 50))
+            p.fillPath(arrow, QBrush(arrow_grad))
+            p.setPen(QPen(QColor(255, 230, 200), max(0.6, 1.2 * scale)))
+            p.drawPath(arrow)
+
+            p.end()
+            icon.addPixmap(pixmap)
+
+        return icon
+
 

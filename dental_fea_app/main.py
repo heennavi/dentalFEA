@@ -41,6 +41,7 @@ if sys.platform.startswith("linux"):
 from dental_fea_app.config import DARK_THEME_QSS
 from dental_fea_app.ui.main_window import MainWindow
 from dental_fea_app.imaging.dicom_reader import DicomReader
+from dental_fea_app.ui.icons import IconFactory
 
 
 def main():
@@ -48,6 +49,7 @@ def main():
     app = QApplication(sys.argv)
     app.setApplicationName("Dental FEA")
     app.setOrganizationName("DentalBiomech")
+    app.setWindowIcon(IconFactory.app_icon())
 
     # 다크 테마 적용
     app.setStyleSheet(DARK_THEME_QSS)

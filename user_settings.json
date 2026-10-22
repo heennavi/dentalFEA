@@ -2,14 +2,14 @@
   "mpr_views": {
     "Axial": {
       "show_crosshair": true,
-      "show_ruler": false,
+      "show_ruler": true,
       "rotation": 0,
       "flip_h": false,
       "flip_v": false
     },
     "Coronal": {
       "show_crosshair": true,
-      "show_ruler": false,
+      "show_ruler": true,
       "rotation": 0,
       "flip_h": false,
       "flip_v": false
@@ -23,9 +23,9 @@
     }
   },
   "volume_3d": {
-    "shading": false,
-    "opacity": 0.14,
-    "geometry": "01d9d0cb00030000000000010000001900000398000002e8000000010000001900000398000002e800000000000000000d70000000010000001900000398000002e8"
+    "shading": true,
+    "opacity": 1.0,
+    "geometry": "01d9d0cb00030000000003b5000000440000074c00000338000003b5000000690000074c0000033800000000000000000d70000003b5000000690000074c00000338"
   },
   "window_level": {
     "window": 1500.0,
@@ -34,16 +34,16 @@
   },
   "mpr_container": {
     "v_sizes": [
-      525,
-      525
+      470,
+      470
     ],
     "h_sizes": [
-      449,
-      634
+      366,
+      516
     ]
   },
   "main_window": {
-    "geometry": "01d9d0cb0003000000000766000000c800000cf60000056f00000766000000ed00000cf60000056f00000000000000000d7000000766000000ed00000cf60000056f"
+    "geometry": "01d9d0cb00030000000007a70000003700000c4d00000470000007a70000005c00000c4d0000047000000000000000000d70000007a70000005c00000c4d00000470"
   },
   "recent_files": [
     "/test/path/dir4",

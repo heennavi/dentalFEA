@@ -8,7 +8,9 @@ Left workflow control panel tab widget for Phase 3 FEA operations:
 """
 
 import os
-from typing import Optional, Dict, Any
+import math
+from typing import Optional, Dict, Any, Tuple
+import numpy as np
 from PySide6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QSpinBox, QDoubleSpinBox, QComboBox, QCheckBox,
@@ -21,6 +23,7 @@ from dental_fea_app.core.state_manager import StateManager
 from fea.models import AnalysisConfig
 from fea.boundary_conditions import default_load_presets
 from dental_fea_app.ui.fea_controller import FeaController
+from dental_fea_app.ui.icons import IconFactory
 
 
 class FeaPanel(QWidget):
@@ -30,6 +33,7 @@ class FeaPanel(QWidget):
         super().__init__(parent)
         self.state_mgr = state_manager
         self.controller = FeaController(state_manager, parent=self)
+        self._fixed_z: Optional[float] = None
 
         self._init_ui()
         self._bind_signals()
@@ -207,20 +211,42 @@ class FeaPanel(QWidget):
         vbox_bc.setContentsMargins(6, 6, 6, 6)
         vbox_bc.setSpacing(4)
 
-        # 하단 고정면 Z
-        vbox_bc.addWidget(QLabel("하단 고정면 높이 Z (mm):", group_bc))
-        row_z = QHBoxLayout()
-        self.spin_fixed_z = QDoubleSpinBox(group_bc)
-        self.spin_fixed_z.setRange(-9999.0, 9999.0)
-        self.spin_fixed_z.setValue(0.0)
-        self.spin_fixed_z.setSingleStep(1.0)
-        self.spin_fixed_z.setFixedWidth(80)  # 현재의 2/3 수준으로 축소
-        self.btn_sync_z = QPushButton("현재 Z 복사", group_bc)
-        self.btn_sync_z.setToolTip("현재 2D 슬라이스 커서 Z 위치 복사")
-        self.btn_sync_z.clicked.connect(self._on_sync_current_z)
-        row_z.addWidget(self.spin_fixed_z)
-        row_z.addWidget(self.btn_sync_z)
-        vbox_bc.addLayout(row_z)
+        # 고정면 설정 (Z-축 또는 축 지정)
+        vbox_bc.addWidget(QLabel("하단 고정면 설정:", group_bc))
+        row_fix = QHBoxLayout()
+        self.combo_fix_mode = QComboBox(group_bc)
+        self.combo_fix_mode.addItem("Z-축", "z_plane")
+        self.combo_fix_mode.addItem("축 지정", "box")
+        self.combo_fix_mode.currentIndexChanged.connect(self._on_fix_mode_changed)
+
+        self.btn_sync_fix = QPushButton("현재 고정위치 복사", group_bc)
+        self.btn_sync_fix.setToolTip("Z-축: 현재 슬라이스 Z 위치 설정 / 축 지정: 2D 단면 사각형 영역 고정면 설정")
+        self.btn_sync_fix.clicked.connect(self._on_sync_current_fix)
+
+        row_fix.addWidget(self.combo_fix_mode, stretch=1)
+        row_fix.addWidget(self.btn_sync_fix, stretch=2)
+        vbox_bc.addLayout(row_fix)
+
+        self.lbl_fix_info = QLabel("고정면: Z-축 기본값 미지정", group_bc)
+        self.lbl_fix_info.setStyleSheet("color: #abb2bf; font-size: 10px;")
+        vbox_bc.addWidget(self.lbl_fix_info)
+
+        # 교합 하중 부여 버튼 및 임플란트 부착 체크박스
+        row_load_ctrl = QHBoxLayout()
+        self.btn_apply_load = QPushButton("교합 하중 부여", group_bc)
+        self.btn_apply_load.setIcon(IconFactory.occlusal_load(16))
+        self.btn_apply_load.setToolTip("3D 뷰어에 교합 하중 조작 화살표 및 기즈모를 표시합니다.")
+        self.btn_apply_load.setStyleSheet("font-weight: bold;")
+        self.btn_apply_load.clicked.connect(self._on_apply_load_clicked)
+
+        self.chk_snap_implant = QCheckBox("임플란트에 부착", group_bc)
+        self.chk_snap_implant.setChecked(True)
+        self.chk_snap_implant.setToolTip("체크 시 하중 화살표가 가장 가까운 임플란트 표면에 자동으로 스냅됩니다.")
+        self.chk_snap_implant.toggled.connect(self._on_snap_implant_toggled)
+
+        row_load_ctrl.addWidget(self.btn_apply_load)
+        row_load_ctrl.addWidget(self.chk_snap_implant)
+        vbox_bc.addLayout(row_load_ctrl)
 
         # 하중 프리셋
         vbox_bc.addWidget(QLabel("교합 하중 프리셋:", group_bc))
@@ -237,12 +263,14 @@ class FeaPanel(QWidget):
         self.spin_load_mag = QDoubleSpinBox(group_bc)
         self.spin_load_mag.setRange(1.0, 2000.0)
         self.spin_load_mag.setValue(100.0)
+        self.spin_load_mag.valueChanged.connect(self._on_load_mag_changed)
         row_load.addWidget(self.spin_load_mag)
 
         row_load.addWidget(QLabel("기울기(°):", group_bc))
         self.spin_load_angle = QDoubleSpinBox(group_bc)
         self.spin_load_angle.setRange(0.0, 90.0)
         self.spin_load_angle.setValue(0.0)
+        self.spin_load_angle.valueChanged.connect(self._on_load_angle_changed)
         row_load.addWidget(self.spin_load_angle)
         vbox_bc.addLayout(row_load)
 
@@ -434,11 +462,13 @@ class FeaPanel(QWidget):
             self.btn_export_inp.setToolTip("CalculiX 해석용 .inp 데크 파일을 생성합니다.")
 
         # 초기 고정면 Z 기본값 설정 (볼륨 또는 지오메트리 바운드 기준)
-        if has_geom and self.spin_fixed_z.value() == 0.0:
+        if has_geom and self._fixed_z is None:
             bounds = getattr(self.state_mgr, "bounds", None)
             if bounds and len(bounds) == 6:
                 z_min = bounds[4]
-                self.spin_fixed_z.setValue(z_min + 2.0)
+                self._fixed_z = z_min + 2.0
+                if self.combo_fix_mode.currentData() == "z_plane":
+                    self.lbl_fix_info.setText(f"고정면: Z-축 기본값 ({self._fixed_z:.1f} mm)")
 
     def _on_stale_changed(self, is_stale: bool):
         self.banner_stale.setVisible(is_stale)
@@ -448,6 +478,29 @@ class FeaPanel(QWidget):
 
     # --- 메쉬 슬롯 ---
     def _on_mesh_clicked(self):
+        # 중간에 체적 메쉬 생성을 다시하면 물성, 하단면 고정, 교합하중 등 이후 단계 데이터 모두 제거
+        self._fixed_z = None
+        self.state_mgr.set_material_assignment(None)
+        self.state_mgr.set_bc_set(None)
+        self.state_mgr.set_last_frd_path(None)
+        self.state_mgr.set_bc_fix_box(None)
+
+        self.lbl_mat_summary.setText("물성 미할당 (골 HU 샘플링 필요)")
+        self.lbl_mat_summary.setStyleSheet("color: #888899; font-size: 10px;")
+        self.lbl_bc_status.setText("경계조건 미설정")
+        self.lbl_bc_status.setStyleSheet("color: #888899; font-size: 10px;")
+        self.lbl_fix_info.setText("고정면: Z-축 기본값 미지정")
+        self.lbl_solver_status.setText("⚠️ 1단계 [메쉬 생성] 필요")
+        self.lbl_solver_status.setStyleSheet("color: #888899; font-size: 10px;")
+
+        viewer = self._get_fea_viewer()
+        if viewer:
+            viewer.set_load_gizmo_visible(False)
+            for act in viewer.bc_actors:
+                viewer.renderer.RemoveActor(act)
+            viewer.bc_actors.clear()
+            viewer.render()
+
         elem_type = self.combo_elem_type.currentData()
         config = AnalysisConfig(
             mesh_size_far_mm=self.spin_size_far.value(),
@@ -564,24 +617,162 @@ class FeaPanel(QWidget):
         QMessageBox.warning(self, "물성 할당 오류", err_msg)
 
     # --- 경계조건 슬롯 ---
-    def _on_sync_current_z(self):
-        curr_z = self.state_mgr.current_coords[2]
-        self.spin_fixed_z.setValue(curr_z)
+    def _get_fea_viewer(self):
+        """윈도우 트리에서 FeaGeometryViewWidget 인스턴스 탐색"""
+        win = self.window()
+        if hasattr(win, "mpr_container") and hasattr(win.mpr_container, "fea_viewer"):
+            viewer = win.mpr_container.fea_viewer
+            if viewer and viewer.on_load_params_changed_callback != self._on_gizmo_angle_dragged:
+                viewer.on_load_params_changed_callback = self._on_gizmo_angle_dragged
+            return viewer
+        return None
+
+    def _on_gizmo_angle_dragged(self, tilt_deg: float):
+        """화살표 기즈모 드래그 회전 시 스핀박스 각도 실시간 동기화"""
+        self.spin_load_angle.blockSignals(True)
+        self.spin_load_angle.setValue(round(tilt_deg, 1))
+        self.spin_load_angle.blockSignals(False)
+
+    def _on_fix_mode_changed(self, idx_or_text):
+        """고정면 모드(Z-축 또는 축 지정) 변경 슬롯"""
+        mode = self.combo_fix_mode.currentData()
+        if mode == "box":
+            self.state_mgr.bc_fix_drawing_mode_toggled.emit(True)
+            self.lbl_fix_info.setText("축 지정 모드: 2D 단면 뷰에서 사각형 영역을 드래그하세요.")
+            self.lbl_fix_info.setStyleSheet("color: #61afef; font-size: 10px;")
+        else:
+            self.state_mgr.bc_fix_drawing_mode_toggled.emit(False)
+            if self._fixed_z is not None:
+                self.lbl_fix_info.setText(f"고정면: Z-축 ({self._fixed_z:.1f} mm)")
+            else:
+                self.lbl_fix_info.setText("고정면: Z-축 기본값 미지정")
+            self.lbl_fix_info.setStyleSheet("color: #abb2bf; font-size: 10px;")
+
+    def _on_sync_current_fix(self):
+        """현재 고정위치 복사 슬롯"""
+        mode = self.combo_fix_mode.currentData()
+        if mode == "box":
+            self.state_mgr.bc_fix_drawing_mode_toggled.emit(False)
+            box = self.state_mgr.bc_fix_box
+            if box is not None:
+                self.lbl_fix_info.setText(
+                    f"지정 축 영역 복사됨 (X:{box[0]:.0f}~{box[1]:.0f}, Y:{box[2]:.0f}~{box[3]:.0f}, Z:{box[4]:.0f}~{box[5]:.0f})"
+                )
+                self.lbl_fix_info.setStyleSheet("color: #98c379; font-size: 10px;")
+                QMessageBox.information(self, "고정 위치 복사", "2D 사각형 및 축 전체 길이와 결합된 3D 고정 영역이 복사되었습니다.")
+            else:
+                self.lbl_fix_info.setText("지정된 2D 영역 없음 (2D 단면에서 먼저 사각형을 그리세요)")
+                self.lbl_fix_info.setStyleSheet("color: #e5c07b; font-size: 10px;")
+                QMessageBox.warning(self, "고정 영역 미지정", "2D 뷰에서 먼저 사각형을 드래그하여 영역을 지정해 주세요.")
+        else:
+            curr_z = self.state_mgr.current_coords[2]
+            self._fixed_z = curr_z
+            self.lbl_fix_info.setText(f"고정면: Z={curr_z:.1f} mm 복사 완료")
+            self.lbl_fix_info.setStyleSheet("color: #98c379; font-size: 10px;")
+            QMessageBox.information(self, "고정 위치 복사", f"현재 슬라이스 Z 위치({curr_z:.1f} mm)가 하단 고정면으로 복사되었습니다.")
+
+    def _on_apply_load_clicked(self):
+        """교합 하중 부여 버튼 클릭 슬롯: 이전 화살표를 제거하고 새로운 화살표 생성 (기존 힘과 각도는 유지)"""
+        viewer = self._get_fea_viewer()
+        if viewer:
+            current_mag = self.spin_load_mag.value()
+            current_angle = self.spin_load_angle.value()
+            if hasattr(viewer, "recreate_load_gizmo"):
+                viewer.recreate_load_gizmo(magnitude_N=current_mag, tilt_deg=current_angle)
+            else:
+                viewer.set_load_gizmo_visible(True)
+            self._update_gizmo_parameters()
+
+    def _on_snap_implant_toggled(self, checked: bool):
+        """임플란트 스냅 체크 토글 슬롯"""
+        viewer = self._get_fea_viewer()
+        if viewer and viewer.load_gizmo:
+            viewer.load_gizmo.snap_to_implant = checked
+
+    def _on_load_mag_changed(self, val: float):
+        self._update_gizmo_parameters()
+
+    def _on_load_angle_changed(self, val: float):
+        self._update_gizmo_parameters()
 
     def _on_load_preset_changed(self):
         key = self.combo_load_preset.currentData()
         if key in self._load_presets:
             p = self._load_presets[key]
+            self.spin_load_mag.blockSignals(True)
+            self.spin_load_angle.blockSignals(True)
             self.spin_load_mag.setValue(p["magnitude_N"])
             self.spin_load_angle.setValue(p["tilt_deg"])
+            self.spin_load_mag.blockSignals(False)
+            self.spin_load_angle.blockSignals(False)
+            self._update_gizmo_parameters()
+
+    def _update_gizmo_parameters(self):
+        """현재 UI 입력값을 3D 뷰어 화살표 기즈모에 반영"""
+        viewer = self._get_fea_viewer()
+        if viewer and viewer.load_gizmo:
+            axis = viewer._get_implant_axis()
+
+            # 임플란트 상단 중심점 위치 획득
+            origin = None
+            if hasattr(viewer, "_get_implant_top_position"):
+                origin = viewer._get_implant_top_position()
+
+            if origin is None:
+                nodes = viewer._get_target_nodes()
+                if nodes is not None and len(nodes) > 0:
+                    max_idx = int(np.argmax(nodes[:, 2]))
+                    origin = nodes[max_idx]
+                elif viewer.load_gizmo.origin is not None:
+                    origin = viewer.load_gizmo.origin
+                else:
+                    origin = np.array([0.0, 0.0, 0.0])
+
+            tilt = self.spin_load_angle.value()
+            if abs(tilt) > 1e-4:
+                up = np.array([0.0, 1.0, 0.0]) if abs(axis[1]) < 0.9 else np.array([1.0, 0.0, 0.0])
+                side = np.cross(axis, up)
+                side /= max(1e-6, np.linalg.norm(side))
+                rad = math.radians(tilt)
+                direction = axis * math.cos(rad) + np.cross(side, axis) * math.sin(rad)
+                direction /= max(1e-6, np.linalg.norm(direction))
+            else:
+                direction = axis.copy()
+
+            viewer.load_gizmo.update_parameters(
+                origin=origin,
+                direction=direction,
+                magnitude_N=self.spin_load_mag.value(),
+                tilt_deg=tilt
+            )
+            viewer.render()
 
     def _on_setup_bc_clicked(self):
+        # 1. 3D 뷰어 교합 하중 화살표 감추기
+        viewer = self._get_fea_viewer()
+        load_pos = None
+        load_dir = None
+        if viewer:
+            if viewer.load_gizmo and viewer.load_gizmo.is_visible:
+                load_pos = viewer.load_gizmo.origin
+                load_dir = viewer.load_gizmo.direction
+            viewer.set_load_gizmo_visible(False)
+
+        # 2. 파라미터 수집
+        fix_mode_data = self.combo_fix_mode.currentData()
+        fix_box = self.state_mgr.bc_fix_box if fix_mode_data == "box" else None
+
+        # 3. 경계조건 설정 및 검증 실행
         issues = self.controller.setup_boundary_conditions(
-            bottom_z=self.spin_fixed_z.value(),
+            bottom_z=self._fixed_z,
             load_preset_key=self.combo_load_preset.currentData(),
             load_mag=self.spin_load_mag.value(),
             load_angle=self.spin_load_angle.value(),
             top_margin_mm=self.spin_load_margin.value(),
+            fix_mode=fix_mode_data,
+            fix_box=fix_box,
+            load_position=load_pos,
+            load_direction=load_dir,
         )
 
     def _on_bc_validated(self, issues: list):

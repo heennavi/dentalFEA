@@ -113,7 +113,7 @@ class SegmentationPanel(QWidget):
                 background-color: #1e3a5f;
                 color: #ffffff;
                 font-weight: bold;
-                padding: 6px 4px;
+                padding: 6px 8px;
                 border-radius: 4px;
                 border: 1px solid #3878b2;
             }
@@ -127,6 +127,8 @@ class SegmentationPanel(QWidget):
                 border-color: #444452;
             }
         """)
+        self.btn_run.adjustSize()
+        self.btn_run.setFixedWidth(self.btn_run.sizeHint().width())
         self.btn_run.clicked.connect(self._run_segmentation)
         param_layout.addWidget(self.btn_run)
 

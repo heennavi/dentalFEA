@@ -27,6 +27,7 @@ class MainWindow(QMainWindow):
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
         self.setWindowTitle("Dental FEA - Biomechanics & Implant Planning System")
+        self.setWindowIcon(IconFactory.app_icon())
         self.resize(1400, 900)
 
         # 코어 상태 및 설정 관리자

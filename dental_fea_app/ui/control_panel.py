@@ -19,7 +19,7 @@ from dental_fea_app.ui.segmentation.segmentation_panel import SegmentationPanel
 from dental_fea_app.ui.placement.implant_panel import ImplantPanel
 from dental_fea_app.ui.geometry.geometry_panel import GeometryPanel
 from dental_fea_app.ui.fea_panel import FeaPanel
-
+import math
 
 
 class ControlPanel(QWidget):
