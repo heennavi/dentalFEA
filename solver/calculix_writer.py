@@ -395,7 +395,7 @@ def write_inp(
 
         # Output requests
         buffer.append("*NODE FILE")
-        buffer.append("U")
+        buffer.append("U, RF")
         buffer.append("*EL FILE")
         buffer.append("S, E")
         buffer.append("*END STEP")
