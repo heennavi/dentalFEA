@@ -177,6 +177,15 @@ class FeaPanel(QWidget):
         self.spin_bins.setValue(30)
         self.spin_bins.setFixedWidth(60)  # 기존 폭의 1/2로 축소
         row_bins.addWidget(self.spin_bins)
+
+        self.btn_copy_mat = QPushButton("현재 물성 복사", group_mat)
+        self.btn_copy_mat.setStyleSheet("padding: 2px 6px; font-size: 11px;")
+        self.btn_copy_mat.adjustSize()
+        self.btn_copy_mat.setFixedWidth(self.btn_copy_mat.sizeHint().width())
+        self.btn_copy_mat.setToolTip("현재 물성 값을 클립보드에 복사")
+        self.btn_copy_mat.clicked.connect(self._on_copy_material_clicked)
+        row_bins.addWidget(self.btn_copy_mat)
+
         row_bins.addStretch()
         vbox_mat.addLayout(row_bins)
 
@@ -479,6 +488,48 @@ class FeaPanel(QWidget):
         QMessageBox.critical(self, "메쉬 오류", err_msg)
 
     # --- 물성 슬롯 ---
+    def _on_copy_material_clicked(self):
+        """현재 물성 정보 또는 프리셋 정보를 클립보드에 복사하고 알림 메시지를 표시"""
+        lines = []
+        mat_assign = self.state_mgr.material_assignment
+        if mat_assign is not None and mat_assign.materials:
+            lines.append("=== 현재 할당된 재료 물성 (Material Assignment) ===")
+            for i, m in enumerate(mat_assign.materials):
+                dens_str = f", 밀도: {m.density:.3e} t/mm³" if m.density is not None else ""
+                lines.append(f"[{i:02d}] {m.name}: E = {m.E:,.1f} MPa, nu = {m.nu}{dens_str}")
+            if mat_assign.element_material:
+                lines.append("\n=== 부품별 요소 할당 현황 ===")
+                for part_name, elem_mats in mat_assign.element_material.items():
+                    lines.append(f"- {part_name}: {len(elem_mats):,}개 요소")
+        else:
+            lines.append("=== 물성 설정 정보 (Preset & Settings) ===")
+            preset_name = os.path.basename(self._custom_preset_path) if self._custom_preset_path else "기본 presets.json"
+            lines.append(f"프리셋: {preset_name}")
+            lines.append(f"E 구간(Bin) 개수: {self.spin_bins.value()}")
+            preset_path = self._custom_preset_path or os.path.join(
+                os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "material", "presets.json"
+            )
+            if os.path.exists(preset_path):
+                try:
+                    import json
+                    with open(preset_path, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                    lines.append("\n[프리셋 세부 내용]")
+                    lines.append(json.dumps(data, indent=2, ensure_ascii=False))
+                except Exception as ex:
+                    lines.append(f"(프리셋 파일 읽기 오류: {ex})")
+
+        text_to_copy = "\n".join(lines)
+        clipboard = QApplication.clipboard()
+        if clipboard is not None:
+            clipboard.setText(text_to_copy)
+
+        QMessageBox.information(
+            self,
+            "물성 복사",
+            "현재 물성 값이 클립보드에 복사되었습니다."
+        )
+
     def _on_choose_preset(self):
         file_path, _ = QFileDialog.getOpenFileName(
             self, "물성 매핑 프리셋 JSON 선택", "", "JSON 파일 (*.json);;모든 파일 (*.*)"

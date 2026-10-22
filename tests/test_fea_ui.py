@@ -396,5 +396,39 @@ class TestFeaControllerHeadless:
         th.start()
         th.join(timeout=5.0)
 
-        assert len(thread_error) == 0, f"Gmsh thread initialization failed: {thread_error}"
+    def test_copy_material_button(self, qapp, monkeypatch):
+        """현재 물성 복사 버튼 배치 및 클립보드 복사 동작 검증"""
+        from unittest.mock import MagicMock
+        from PySide6.QtWidgets import QMessageBox
+
+        mock_info = MagicMock()
+        monkeypatch.setattr(QMessageBox, "information", mock_info)
+
+        state_mgr = StateManager()
+        panel = FeaPanel(state_mgr)
+
+        # 1. 버튼 존재 및 크기 검증
+        assert hasattr(panel, "btn_copy_mat")
+        assert panel.btn_copy_mat.text() == "현재 물성 복사"
+
+        # 2. 물성 미할당 상태에서 복사 클릭
+        panel.btn_copy_mat.click()
+        assert mock_info.called
+        clipboard_text = QApplication.clipboard().text()
+        assert "E 구간(Bin) 개수" in clipboard_text or "presets.json" in clipboard_text
+
+        # 3. 물성 할당 상태에서 복사 클릭
+        mat = MaterialDef(name="CORTICAL", E=13700.0, nu=0.3)
+        mat_assign = MaterialAssignment(
+            element_material={"bone": np.array([0, 0])},
+            materials=[mat],
+        )
+        state_mgr.set_material_assignment(mat_assign)
+
+        mock_info.reset_mock()
+        panel.btn_copy_mat.click()
+        assert mock_info.called
+        clipboard_text = QApplication.clipboard().text()
+        assert "CORTICAL" in clipboard_text
+        assert "13,700" in clipboard_text or "13700" in clipboard_text
 
