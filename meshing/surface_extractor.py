@@ -229,8 +229,8 @@ def contact_pair_from_parts(
     # 1. Master 경계면 추출
     m_faces_nodes, m_faces_info = boundary_faces(m_part.elements, nodes=m_part.nodes)
 
-    # 2. Slave 경계 절점 추출
-    s_faces_nodes, _ = boundary_faces(s_part.elements, nodes=s_part.nodes)
+    # 2. Slave 경계면 및 경계 절점 추출 (C3D10 2차 요소인 경우 midside 절점 포함)
+    s_faces_nodes, s_faces_info = boundary_faces(s_part.elements, nodes=s_part.nodes)
     if len(m_faces_nodes) == 0 or len(s_faces_nodes) == 0:
         return TieDef(
             name=name,
@@ -241,20 +241,36 @@ def contact_pair_from_parts(
             position_tolerance_mm=tol_mm,
         )
 
-    s_boundary_node_ids = np.unique(s_faces_nodes)
+    # C3D10 midside node mapping for faces S1~S4 (CalculiX 0-based node ordering)
+    # S1: [0, 1, 2, 4, 5, 6], S2: [0, 3, 1, 7, 9, 4], S3: [1, 3, 2, 8, 9, 5], S4: [2, 3, 0, 6, 9, 7]
+    c3d10_face_nodes_map = {
+        1: [0, 1, 2, 4, 5, 6],
+        2: [0, 3, 1, 7, 9, 4],
+        3: [1, 3, 2, 8, 9, 5],
+        4: [2, 3, 0, 6, 9, 7],
+    }
+
+    if s_part.elements.shape[1] == 10:
+        s_node_set = set()
+        for elem_idx, fid in s_faces_info:
+            el = s_part.elements[elem_idx]
+            local_nids = c3d10_face_nodes_map.get(int(fid), [0, 1, 2])
+            for ln in local_nids:
+                s_node_set.add(int(el[ln]))
+        s_boundary_node_ids = np.array(sorted(list(s_node_set)), dtype=np.int64)
+    else:
+        s_boundary_node_ids = np.unique(s_faces_nodes)
+
     s_boundary_coords = s_part.nodes[s_boundary_node_ids]
 
-    # 3. Master 경계면 중심점 계산
-    v0 = m_part.nodes[m_faces_nodes[:, 0]]
-    v1 = m_part.nodes[m_faces_nodes[:, 1]]
-    v2 = m_part.nodes[m_faces_nodes[:, 2]]
-    m_centroids = (v0 + v1 + v2) / 3.0
+    # 3. Master 표면 메쉬에 대한 최단 거리 질의 (trimesh proximity)
+    import trimesh
+    from trimesh.proximity import closest_point
 
-    # 4. cKDTree 근접 거리 질의: slave boundary nodes -> master face centroids
-    tree = cKDTree(m_centroids)
-    dists, nearest_m_face_idx = tree.query(s_boundary_coords, distance_upper_bound=tol_mm)
+    m_trimesh = trimesh.Trimesh(vertices=m_part.nodes, faces=m_faces_nodes, process=False)
+    _, dists, nearest_m_face_idx = closest_point(m_trimesh, s_boundary_coords)
 
-    valid_mask = dists <= tol_mm
+    valid_mask = dists <= float(tol_mm)
     matched_slave_nodes = s_boundary_node_ids[valid_mask]
     matched_master_face_idx = np.unique(nearest_m_face_idx[valid_mask])
 
@@ -268,20 +284,18 @@ def contact_pair_from_parts(
             position_tolerance_mm=tol_mm,
         )
 
-    # 5. 사면체 요소 붕괴 방지 필터:
+    # 4. 사면체 요소 붕괴 방지 필터:
     # 어떤 사면체 요소의 4개 꼭짓점이 모두 slave_nodes에 포함되면,
     # 해당 요소는 구속 시 3차원 체적이 0으로 압착(flatten)되어 음의 야코비안이 발생함.
-    # apex 꼭짓점(el[3])을 접촉면에서 제외하여 base 삼각면(el[0, 1, 2])만 접촉에 참여시키고
-    # 사면체의 3차원 높이와 체적을 보존함.
+    # apex 꼭짓점(el[3])을 접촉면에서 제외하여 base 삼각면만 접촉에 참여시키고 체적을 보존함.
     slave_node_set = set(matched_slave_nodes)
     s_corner_elements = s_part.elements[:, :4]
 
     for el in s_corner_elements:
         if all(n in slave_node_set for n in el):
-            slave_node_set.discard(el[3])
+            slave_node_set.discard(int(el[3]))
 
     filtered_slave_nodes = np.array(sorted(list(slave_node_set)), dtype=np.int64)
-
     master_faces = m_faces_info[matched_master_face_idx]
 
     return TieDef(
@@ -290,5 +304,5 @@ def contact_pair_from_parts(
         slave_part=s_part.name,
         master_faces=master_faces,
         slave_nodes=filtered_slave_nodes,
-        position_tolerance_mm=0.0,
+        position_tolerance_mm=float(tol_mm),
     )
