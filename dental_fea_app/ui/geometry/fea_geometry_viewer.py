@@ -151,6 +151,7 @@ class FeaGeometryViewWidget(QWidget):
         self._init_actors()
 
         # 6. StateManager 신호 연결
+        self.state_mgr.volume_loaded.connect(self.reset_viewer)
         self.state_mgr.fea_geometry_changed.connect(self._on_fea_geometry_changed)
         self.state_mgr.fea_visibility_changed.connect(self._on_fea_visibility_changed)
         self.state_mgr.fea_clipping_changed.connect(self._on_fea_clipping_changed)
@@ -330,6 +331,22 @@ class FeaGeometryViewWidget(QWidget):
             mapper.RemoveAllClippingPlanes()
             mapper.AddClippingPlane(self.fea_clip_plane)
 
+        self.render()
+
+    def reset_viewer(self, *args):
+        """새로운 볼륨 로드 시 3D FEA 화면의 모든 기하, 메쉬, 경계조건 및 기즈모를 초기화하고 플레이스홀더로 복귀"""
+        self._fea_bounds = None
+        self._on_fea_geometry_changed(None)
+        self._on_mesh_model_changed(None)
+        self._on_bc_set_changed(None)
+        if hasattr(self, "load_gizmo") and self.load_gizmo is not None:
+            self.load_gizmo.cleanup()
+        if hasattr(self, "btn_toggle_load"):
+            self.btn_toggle_load.blockSignals(True)
+            self.btn_toggle_load.setChecked(False)
+            self.btn_toggle_load.setIcon(IconFactory.visibility_eye(False, 20))
+            self.btn_toggle_load.blockSignals(False)
+        self.stack.setCurrentWidget(self.lbl_placeholder)
         self.render()
 
     def reset_camera(self):

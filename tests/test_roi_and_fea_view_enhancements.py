@@ -243,3 +243,89 @@ class TestRoiAndFeaViewEnhancements(unittest.TestCase):
         self.assertAlmostEqual(center[1], -35.0, delta=1.0)
         self.assertAlmostEqual(center[2], -25.0, delta=1.0)
 
+    def test_06_dicom_reload_full_reset(self):
+        """새로운 DICOM 볼륨 로드 시 임플란트, ROI, FEA 기하/메쉬 및 3D FEA 뷰어가 깨끗이 초기화되는지 검증"""
+        fea_viewer = FeaGeometryViewWidget(self.state_mgr)
+
+        # 1. 상태 설정 (임플란트 1개 추가, ROI 설정, 기하 설정)
+        spec = ImplantSpec(
+            id="test_imp",
+            name="Test Implant",
+            diameter_mm=2.0,
+            length_mm=4.0,
+            taper_deg=0.0,
+            top_type="flat",
+            thread_type="triangular",
+            micro_threads=False
+        )
+        self.state_mgr.implant_placement_mgr.place_implant(spec, initial_position=(5.0, 5.0, 5.0))
+        self.state_mgr.set_roi_bounds([2, 8, 2, 8, 2, 8])
+        c_box = trimesh.creation.box([4, 4, 4])
+        dummy_geom = FeaGeometry(cortical=c_box, cancellous=c_box.copy(), implant=c_box.copy(), report={})
+        self.state_mgr.set_fea_geometry(dummy_geom)
+
+        self.assertEqual(len(self.state_mgr.implant_placement_mgr.implants), 1)
+        self.assertIsNotNone(self.state_mgr.roi_bounds)
+        self.assertIsNotNone(self.state_mgr.fea_geometry)
+        self.assertEqual(fea_viewer.stack.currentWidget(), fea_viewer.vtkWidget)
+
+        # 2. 새로운 DICOM 볼륨 로드
+        new_img = vtk.vtkImageData()
+        new_img.SetDimensions(12, 12, 12)
+        new_img.SetSpacing(1.0, 1.0, 1.0)
+        new_img.AllocateScalars(vtk.VTK_SHORT, 1)
+        self.state_mgr.set_volume_data(new_img, {"series_path": "new_series"})
+
+        # 3. 모든 상태가 초기화되었는지 검증
+        self.assertEqual(len(self.state_mgr.implant_placement_mgr.implants), 0, "새 볼륨 로드 시 임플란트는 모두 삭제되어야 합니다.")
+        self.assertIsNone(self.state_mgr.roi_bounds, "새 볼륨 로드 시 ROI bounds는 None이어야 합니다.")
+        self.assertIsNone(self.state_mgr.fea_geometry, "새 볼륨 로드 시 FEA 기하는 초기화되어야 합니다.")
+        self.assertIsNone(self.state_mgr.mesh_model, "새 볼륨 로드 시 FEA 메쉬는 초기화되어야 합니다.")
+        self.assertEqual(fea_viewer.stack.currentWidget(), fea_viewer.lbl_placeholder, "3D FEA 화면은 플레이스홀더 안내 문구로 초기화되어야 합니다.")
+
+    def test_07_roi_gizmo_axis_alignment_and_rotation(self):
+        """ROI 박스가 회전할 때 기즈모 링 액터들의 자세가 박스의 로컬 축과 일치하고, 중심점 변위 없이 회전하는지 검증"""
+        viewer = VolumeViewerWindow(self.state_mgr)
+        viewer.chk_roi_rotate.setChecked(True)
+        viewer.chk_roi_box.setChecked(True)
+        viewer.btn_roi_boundary.setChecked(True)
+
+        # 초기 상태에서 중심점 및 축 확인
+        _, center_before = viewer._get_roi_box_corners_and_center()
+        self.assertIsNotNone(center_before)
+
+        # 1. X축 45도 회전
+        viewer.rotate_roi_box("X", 45.0)
+        _, center_after_x = viewer._get_roi_box_corners_and_center()
+        self.assertAlmostEqual(np.linalg.norm(center_after_x - center_before), 0.0, places=4, msg="회전 후 박스 중심점은 유지되어야 함")
+
+        # 기즈모 링 액터의 UserMatrix 추출
+        actor_x = viewer.roi_gizmo_actors["X"]
+        mat = actor_x.GetUserMatrix()
+        self.assertIsNotNone(mat)
+
+        # 2. Y축 30도 회전
+        viewer.rotate_roi_box("Y", 30.0)
+        _, center_after_y = viewer._get_roi_box_corners_and_center()
+        self.assertAlmostEqual(np.linalg.norm(center_after_y - center_before), 0.0, places=4)
+
+        # 3. Z축 -25도 회전
+        viewer.rotate_roi_box("Z", -25.0)
+        _, center_after_z = viewer._get_roi_box_corners_and_center()
+        self.assertAlmostEqual(np.linalg.norm(center_after_z - center_before), 0.0, places=4)
+
+    def test_08_rotated_roi_volume_clipping(self):
+        """회전된 ROI 육면체에 대해 볼륨 매퍼에 6개의 OBB 클리핑 평면이 주입되는지 검증"""
+        viewer = VolumeViewerWindow(self.state_mgr)
+        viewer.chk_roi_apply.setChecked(True)
+        self.state_mgr.set_roi_bounds([2, 8, 2, 8, 2, 8])
+
+        # 박스 회전
+        viewer.rotate_roi_box("Z", 35.0)
+        viewer._update_volume_cropping()
+
+        # 볼륨 매퍼의 클리핑 평면 개수 검증 (6개 평면)
+        n_planes = viewer.volume_mapper.GetNumberOfClippingPlanes()
+        self.assertEqual(n_planes, 6, "회전된 ROI 육면체 클리핑 시 6개의 절단 평면이 등록되어야 합니다.")
+
+

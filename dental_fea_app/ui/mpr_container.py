@@ -557,7 +557,13 @@ class MPRContainer(QWidget):
             self.state_mgr.implant_model_changed.connect(lambda *_: self.user_info_modified.emit())
 
     def _on_volume_loaded_for_dialogs(self, vtk_image):
-        self.annotation_dialog.update_dicom_meta(self.state_mgr.metadata)
+        if hasattr(self, "annotation_dialog"):
+            self.annotation_dialog._clear_all()
+            self.annotation_dialog.update_dicom_meta(self.state_mgr.metadata)
+        if hasattr(self, "measure_dialog"):
+            self.measure_dialog._on_clear_all()
+        if hasattr(self, "draw_dialog"):
+            self.draw_dialog._clear_all()
 
     def open_measure_dialog(self):
         self.measure_dialog.show()

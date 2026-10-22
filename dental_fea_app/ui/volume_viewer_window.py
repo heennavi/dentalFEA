@@ -416,25 +416,72 @@ class VolumeViewerWindow(QMainWindow):
         if center is None:
             return
 
+        # 박스의 8개 꼭짓점으로부터 세 로컬 축 방향 벡터 계산
+        vec_x = corners[1] - corners[0]
+        vec_y = corners[3] - corners[0]
+        vec_z = corners[4] - corners[0]
+        norm_x = np.linalg.norm(vec_x)
+        norm_y = np.linalg.norm(vec_y)
+        norm_z = np.linalg.norm(vec_z)
+        if norm_x < 1e-6 or norm_y < 1e-6 or norm_z < 1e-6:
+            return
+
+        dir_x = vec_x / norm_x
+        dir_y = vec_y / norm_y
+        dir_z = vec_z / norm_z
+
         # 박스의 대각선 길이를 기준으로 적절한 링 반경 계산
         dists = [np.linalg.norm(c - center) for c in corners]
         max_dist = max(dists) if dists else 10.0
         gizmo_radius = max(8.0, max_dist * 0.85)
         tube_radius = max(0.4, gizmo_radius * 0.035)
 
+        # 박스의 자세 및 중심점, 스케일을 반영하는 4x4 행렬 구성
+        mat = vtk.vtkMatrix4x4()
+        cols = [gizmo_radius * dir_x, gizmo_radius * dir_y, gizmo_radius * dir_z]
+        for row in range(3):
+            for col in range(3):
+                mat.SetElement(row, col, cols[col][row])
+            mat.SetElement(row, 3, center[row])
+        mat.SetElement(3, 3, 1.0)
+
         for axis, actor in self.roi_gizmo_actors.items():
             self.roi_gizmo_tube_filters[axis].SetRadius(tube_radius / gizmo_radius)
-            actor.SetPosition(center[0], center[1], center[2])
-            actor.SetScale(gizmo_radius, gizmo_radius, gizmo_radius)
+            actor.SetPosition(0.0, 0.0, 0.0)
+            actor.SetScale(1.0, 1.0, 1.0)
+            actor.SetUserMatrix(mat)
             actor.SetVisibility(True)
 
     def rotate_roi_box(self, axis: str, angle_deg: float):
-        """ROI boundary box를 크기 왜곡 없이 중심점 기준으로 지정한 축(X, Y, Z)에 따라 angle_deg만큼 정확히 회전"""
+        """ROI boundary box를 크기 왜곡 없이 중심점 기준으로 지정한 로컬 축(X, Y, Z)에 따라 angle_deg만큼 정확히 회전"""
         if not hasattr(self, "box_widget"):
             return
 
         corners, center = self._get_roi_box_corners_and_center()
         if center is None:
+            return
+
+        vec_x = corners[1] - corners[0]
+        vec_y = corners[3] - corners[0]
+        vec_z = corners[4] - corners[0]
+        norm_x = np.linalg.norm(vec_x)
+        norm_y = np.linalg.norm(vec_y)
+        norm_z = np.linalg.norm(vec_z)
+        if norm_x < 1e-6 or norm_y < 1e-6 or norm_z < 1e-6:
+            return
+
+        dir_x = vec_x / norm_x
+        dir_y = vec_y / norm_y
+        dir_z = vec_z / norm_z
+
+        ax = axis.upper()
+        if ax == "X":
+            axis_vec = dir_x
+        elif ax == "Y":
+            axis_vec = dir_y
+        elif ax == "Z":
+            axis_vec = dir_z
+        else:
             return
 
         current_trans = vtk.vtkTransform()
@@ -444,13 +491,7 @@ class VolumeViewerWindow(QMainWindow):
         rot_trans.PostMultiply()
         rot_trans.Concatenate(current_trans)
         rot_trans.Translate(-center[0], -center[1], -center[2])
-        ax = axis.upper()
-        if ax == "X":
-            rot_trans.RotateX(angle_deg)
-        elif ax == "Y":
-            rot_trans.RotateY(angle_deg)
-        elif ax == "Z":
-            rot_trans.RotateZ(angle_deg)
+        rot_trans.RotateWXYZ(angle_deg, axis_vec[0], axis_vec[1], axis_vec[2])
         rot_trans.Translate(center[0], center[1], center[2])
 
         self._box_widget_updating = True
@@ -458,6 +499,7 @@ class VolumeViewerWindow(QMainWindow):
         self._box_widget_updating = False
 
         self._on_box_widget_interaction(None, None)
+        self._update_volume_cropping()
         self._update_roi_rotation_points()
         self.render()
 
@@ -471,6 +513,7 @@ class VolumeViewerWindow(QMainWindow):
         self._box_widget_updating = True
         self.state_mgr.set_roi_bounds(bounds)
         self._box_widget_updating = False
+        self._update_volume_cropping()
         self._update_roi_rotation_points()
 
     def _init_position_indicators(self):
@@ -1002,7 +1045,7 @@ class VolumeViewerWindow(QMainWindow):
         self._update_roi_box_visibility()
 
     def _update_volume_cropping(self):
-        """VTK Volume Cropping 적용/해제"""
+        """VTK Volume Cropping 적용/해제 (회전된 OBB 육면체 평면 클리핑 반영)"""
         if self.state_mgr.vtk_image is None:
             return
 
@@ -1018,6 +1061,7 @@ class VolumeViewerWindow(QMainWindow):
         else:
             self.volume_mapper.SetCropping(0)
 
+        self._apply_clipping_plane()
         self._update_roi_box_visibility()
         self.render()
 
@@ -1163,35 +1207,55 @@ class VolumeViewerWindow(QMainWindow):
         self._update_clip_button_styles()
 
     def _apply_clipping_plane(self):
+        """ROI 육면체 클리핑 평면 및 단면 컷팅 평면 일괄 적용"""
         self.volume_mapper.RemoveAllClippingPlanes()
 
-        if self._current_clip_mode == "O":
-            self.render()
-            return
+        # 1. ROI 적용: 회전된 육면체(OBB) 6개 평면을 추출하여 내부만 남김
+        apply_roi = hasattr(self, "chk_roi_apply") and self.chk_roi_apply.isChecked()
+        bounds = self.state_mgr.roi_bounds
+        if apply_roi and bounds is not None and hasattr(self, "box_widget"):
+            planes = vtk.vtkPlanes()
+            self.box_widget.GetPlanes(planes)
 
-        x, y, z = self.state_mgr.current_coords
-        axis_char = self._current_clip_mode[0]
-        sign = +1 if self._current_clip_mode[1] == '+' else -1
+            # VTK SmartVolumeMapper는 평면의 음의 반공간을 클리핑하므로, 안쪽을 향하도록 법선 반전
+            planes_inv = vtk.vtkPlanes()
+            planes_inv.SetPoints(planes.GetPoints())
+            norms = planes.GetNormals()
+            if norms and norms.GetNumberOfTuples() > 0:
+                inv_norms = vtk.vtkDoubleArray()
+                inv_norms.SetNumberOfComponents(3)
+                inv_norms.SetNumberOfTuples(norms.GetNumberOfTuples())
+                for i in range(norms.GetNumberOfTuples()):
+                    n = norms.GetTuple(i)
+                    inv_norms.SetTuple(i, (-n[0], -n[1], -n[2]))
+                planes_inv.SetNormals(inv_norms)
+                self.volume_mapper.SetClippingPlanes(planes_inv)
 
-        clip_plane = vtk.vtkPlane()
-        if axis_char == "A":
-            clip_plane.SetOrigin(x, y, z)
-            clip_plane.SetNormal(0.0, 0.0, -1.0 * sign)
-        elif axis_char == "C":
-            clip_plane.SetOrigin(x, y, z)
-            clip_plane.SetNormal(0.0, -1.0 * sign, 0.0)
-        elif axis_char == "S":
-            clip_plane.SetOrigin(x, y, z)
-            clip_plane.SetNormal(-1.0 * sign, 0.0, 0.0)
+        # 2. 축 단면 컷팅 평면 추가 (A, C, S)
+        if self._current_clip_mode != "O":
+            x, y, z = self.state_mgr.current_coords
+            axis_char = self._current_clip_mode[0]
+            sign = +1 if self._current_clip_mode[1] == '+' else -1
 
-        self.volume_mapper.AddClippingPlane(clip_plane)
+            clip_plane = vtk.vtkPlane()
+            if axis_char == "A":
+                clip_plane.SetOrigin(x, y, z)
+                clip_plane.SetNormal(0.0, 0.0, -1.0 * sign)
+            elif axis_char == "C":
+                clip_plane.SetOrigin(x, y, z)
+                clip_plane.SetNormal(0.0, -1.0 * sign, 0.0)
+            elif axis_char == "S":
+                clip_plane.SetOrigin(x, y, z)
+                clip_plane.SetNormal(-1.0 * sign, 0.0, 0.0)
+
+            self.volume_mapper.AddClippingPlane(clip_plane)
+
         self.render()
 
     def _reset_all_clipping(self):
         self._current_clip_mode = "O"
-        self.volume_mapper.RemoveAllClippingPlanes()
+        self._apply_clipping_plane()
         self._update_clip_button_styles()
-        self.render()
 
     def _update_clip_button_styles(self):
         def style(btn, active):

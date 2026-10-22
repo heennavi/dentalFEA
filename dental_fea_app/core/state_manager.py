@@ -391,6 +391,19 @@ class StateManager(QObject):
         """
         새로운 VTK 볼륨 데이터를 등록하고 기본 좌표 및 바운드를 갱신합니다.
         """
+        # 새로운 볼륨으로 교체 로드되는 경우 다운스트림 상태 완전 초기화
+        if self._vtk_image is not None:
+            self.set_roi_bounds(None)
+            if hasattr(self, "implant_placement_mgr") and self.implant_placement_mgr is not None:
+                self.implant_placement_mgr.delete_all_implants()
+            self.set_fea_geometry(None)
+            self.set_mesh_model(None)
+            self.set_material_assignment(None)
+            if hasattr(self, "set_bc_set"):
+                self.set_bc_set(None)
+            if hasattr(self, "set_fea_results"):
+                self.set_fea_results(None)
+
         self._vtk_image = vtk_image
         self._metadata = metadata or {}
         if self._metadata.get("series_path"):
