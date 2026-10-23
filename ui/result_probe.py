@@ -1,0 +1,456 @@
+"""
+result_probe.py
+Interactive 3D probe and peak stress marker for FEA simulation results.
+
+Provides node probing via 3D click (with threshold distance check to preserve mouse rotation),
+closest node lookup, peak stress localization, and VTK marker/caption management.
+
+[Units]
+- Length / Displacement: mm
+- Stress: MPa
+- Modulus: MPa
+"""
+
+from typing import Optional, Dict, Any, Sequence, Tuple
+import numpy as np
+import vtk
+from vtk.util import numpy_support
+from PySide6.QtCore import QObject, Signal
+
+from ui.result_view_controller import ResultViewController, FIELD_DISPLAY_CONFIG
+from postprocess.peri_implant import max_stress_location
+
+
+class ResultProbe(QObject):
+    """
+    Interactive 3D inspection tool for probing nodal FEA results and marking peak stress.
+
+    Signals:
+        probed (dict): Emitted when a node is probed via click or direct coordinate lookup.
+            Contains {part, node, xyz, u, u_mag, von_mises, s_max_principal, s_min_principal, E_MPa}.
+        max_marked (dict): Emitted when peak stress is marked.
+            Contains {node_idx, part_name, coord, value, field}.
+    """
+    probed = Signal(dict)
+    max_marked = Signal(dict)
+
+    def __init__(self, parent: Optional[QObject] = None):
+        super().__init__(parent)
+        self._controller: Optional[ResultViewController] = None
+        self._renderer: Optional[vtk.vtkRenderer] = None
+        self._interactor: Optional[vtk.vtkRenderWindowInteractor] = None
+
+        # Observer 태그 관리
+        self._observer_tags: list = []
+
+        # 마우스 드래그 감지 상태
+        self._press_pos: Tuple[int, int] = (0, 0)
+        self._press_ctrl: bool = False
+        self._probe_enabled: bool = False
+
+        # VTK 액터 관리
+        self._probe_sphere_actor: Optional[vtk.vtkActor] = None
+        self._probe_caption_actor: Optional[vtk.vtkCaptionActor2D] = None
+        self._max_sphere_actor: Optional[vtk.vtkActor] = None
+        self._max_caption_actor: Optional[vtk.vtkCaptionActor2D] = None
+
+    # -------------------------------------------------------------------------
+    # 연결 및 수명주기
+    # -------------------------------------------------------------------------
+    def attach(self, controller: ResultViewController) -> None:
+        """
+        Attach the probe to an active ResultViewController and bind VTK interactor events.
+
+        Args:
+            controller: Target ResultViewController instance.
+        """
+        self.detach()
+
+        self._controller = controller
+        self._renderer = controller.renderer
+
+        # Interactor 탐색
+        iren = None
+        if controller.window is not None and hasattr(controller.window, "vtkWidget"):
+            rw = controller.window.vtkWidget.GetRenderWindow()
+            if rw is not None:
+                iren = rw.GetInteractor()
+        elif self._renderer is not None:
+            rw = self._renderer.GetRenderWindow()
+            if rw is not None:
+                iren = rw.GetInteractor()
+
+        self._interactor = iren
+        if self._interactor is not None:
+            tag1 = self._interactor.AddObserver("LeftButtonPressEvent", self._on_left_button_press, 1.0)
+            tag2 = self._interactor.AddObserver("LeftButtonReleaseEvent", self._on_left_button_release, 1.0)
+            self._observer_tags.extend([tag1, tag2])
+
+    def detach(self) -> None:
+        """Detach from controller, remove markers, and unbind interactor observers."""
+        self.clear_markers()
+
+        if self._interactor is not None:
+            for tag in self._observer_tags:
+                self._interactor.RemoveObserver(tag)
+        self._observer_tags.clear()
+
+        self._controller = None
+        self._renderer = None
+        self._interactor = None
+
+    def enable_click_probe(self, enabled: bool) -> None:
+        """Enable or disable single-click probing mode."""
+        self._probe_enabled = bool(enabled)
+
+    # -------------------------------------------------------------------------
+    # 마우스 이벤트 핸들러 (드래그 회전 유지 및 클릭 판별)
+    # -------------------------------------------------------------------------
+    def _on_left_button_press(self, caller: Any, event: str) -> None:
+        """Record press position and control key state; do not abort to preserve mouse drag."""
+        if caller is not None and hasattr(caller, "GetEventPosition"):
+            self._press_pos = caller.GetEventPosition()
+            self._press_ctrl = bool(caller.GetControlKey())
+
+    def _on_left_button_release(self, caller: Any, event: str) -> None:
+        """Evaluate click displacement; trigger probing if displacement <= 3 pixels."""
+        if caller is None or not hasattr(caller, "GetEventPosition"):
+            return
+
+        rel_pos = caller.GetEventPosition()
+        dx = rel_pos[0] - self._press_pos[0]
+        dy = rel_pos[1] - self._press_pos[1]
+        dist = (dx * dx + dy * dy) ** 0.5
+
+        # 드래그 거리 3px 이하이고 (프로브 모드 ON 또는 Ctrl 키 눌림) 상태일 때 실행
+        if dist <= 3.0 and (self._probe_enabled or self._press_ctrl):
+            self._perform_pick(rel_pos[0], rel_pos[1])
+
+    def _perform_pick(self, x: int, y: int) -> None:
+        """Execute VTK picker at screen pixel (x, y) and update probe."""
+        if self._renderer is None or self._controller is None:
+            return
+
+        picker = vtk.vtkPointPicker()
+        picker.SetTolerance(0.01)
+        pick_success = picker.Pick(float(x), float(y), 0.0, self._renderer)
+
+        if pick_success:
+            pick_pos = picker.GetPickPosition()
+            probe_data = self.find_nearest_node(pick_pos)
+            if probe_data is not None:
+                self._update_probe_marker(probe_data)
+                self.probed.emit(probe_data)
+
+    # -------------------------------------------------------------------------
+    # 최근접 절점 검색 및 데이터 수집 (오프스크린 단위 테스트 핵심 함수)
+    # -------------------------------------------------------------------------
+    def find_nearest_node(
+        self,
+        pick_pos: Sequence[float],
+        part_name: Optional[str] = None,
+    ) -> Optional[dict]:
+        """
+        Locate the nearest node to pick_pos (in 3D coordinates) and collect full nodal results.
+
+        This pure computation method operates independently of GUI picking, allowing
+        headless unit testing with arbitrary 3D coordinates.
+
+        Args:
+            pick_pos: (x, y, z) 3D coordinate sequence.
+            part_name: Optional part filter. If None, queries all parts.
+
+        Returns:
+            dict: {
+                "part": str,
+                "node": int (global 0-based index),
+                "xyz": list[float] (undeformed coordinates),
+                "u": list[float] (displacement vector in mm),
+                "u_mag": float (displacement magnitude in mm),
+                "von_mises": float | None (MPa),
+                "s_max_principal": float | None (MPa),
+                "s_min_principal": float | None (MPa),
+                "E_MPa": float | None (MPa),
+            } or None if model or result set is missing.
+        """
+        if self._controller is None:
+            return None
+
+        model = self._controller._model
+        rs = self._controller._rs
+        if model is None or rs is None:
+            return None
+
+        pick_vec = np.asarray(pick_pos, dtype=np.float64)[:3]
+
+        best_part = None
+        best_loc_idx = -1
+        best_dist = float("inf")
+
+        target_parts = [model.get_part(part_name)] if part_name else model.parts
+        target_parts = [p for p in target_parts if p is not None]
+
+        for part in target_parts:
+            # 변형 스케일이 적용된 경우 현재 표시 그리드 좌표 우선 탐색
+            coords = part.nodes
+            if self._controller._grids and part.name in self._controller._grids:
+                grid = self._controller._grids[part.name]
+                if grid.GetPoints() is not None:
+                    coords = numpy_support.vtk_to_numpy(grid.GetPoints().GetData())
+
+            if len(coords) == 0:
+                continue
+
+            dists = np.linalg.norm(coords - pick_vec, axis=1)
+            min_i = int(np.argmin(dists))
+            min_d = float(dists[min_i])
+
+            if min_d < best_dist:
+                best_dist = min_d
+                best_part = part
+                best_loc_idx = min_i
+
+        if best_part is None or best_loc_idx < 0:
+            return None
+
+        offset = model.global_node_offset(best_part.name)
+        global_idx = offset + best_loc_idx
+
+        # 1. 원본 비변형 좌표
+        xyz = [float(c) for c in best_part.nodes[best_loc_idx]]
+
+        # 2. 변위
+        if rs.u is not None and global_idx < len(rs.u):
+            u_vec = [float(x) for x in rs.u[global_idx]]
+        else:
+            u_vec = [0.0, 0.0, 0.0]
+
+        if rs.u_mag is not None and global_idx < len(rs.u_mag):
+            u_mag_val = float(rs.u_mag[global_idx])
+        else:
+            u_mag_val = float(np.linalg.norm(u_vec))
+
+        # 3. 응력 필드
+        vm_val = None
+        if rs.von_mises is not None and global_idx < len(rs.von_mises):
+            raw_vm = rs.von_mises[global_idx]
+            if not np.isnan(raw_vm):
+                vm_val = float(raw_vm)
+
+        smax_val = None
+        if rs.s_max_principal is not None and global_idx < len(rs.s_max_principal):
+            raw_smax = rs.s_max_principal[global_idx]
+            if not np.isnan(raw_smax):
+                smax_val = float(raw_smax)
+
+        smin_val = None
+        if rs.s_min_principal is not None and global_idx < len(rs.s_min_principal):
+            raw_smin = rs.s_min_principal[global_idx]
+            if not np.isnan(raw_smin):
+                smin_val = float(raw_smin)
+
+        # 4. 탄성계수 (E_MPa) - 인접 요소들의 대표값
+        e_mpa_val = None
+        materials = self._controller._materials
+        if materials is not None and best_part.name in materials.element_material:
+            mat_indices = materials.element_material[best_part.name]
+            elems = np.asarray(best_part.elements, dtype=np.int64)
+
+            # 전역 인덱스로 저장되어 있을 경우 로컬로 변환
+            if len(elems) > 0 and np.all(elems >= offset) and np.all(elems < offset + len(best_part.nodes)):
+                elems = elems - offset
+
+            # best_loc_idx를 포함하는 요소 검색
+            adjacent_elems = [e_i for e_i, el in enumerate(elems) if best_loc_idx in el]
+            if adjacent_elems:
+                adjacent_mat_ids = mat_indices[adjacent_elems]
+                e_vals = [materials.materials[m_id].E for m_id in adjacent_mat_ids if m_id < len(materials.materials)]
+                if e_vals:
+                    e_mpa_val = float(np.mean(e_vals))
+
+        return {
+            "part": best_part.name,
+            "node": int(global_idx),
+            "xyz": xyz,
+            "u": u_vec,
+            "u_mag": u_mag_val,
+            "von_mises": vm_val,
+            "s_max_principal": smax_val,
+            "s_min_principal": smin_val,
+            "E_MPa": e_mpa_val,
+        }
+
+    # -------------------------------------------------------------------------
+    # 마커 및 라벨 시각화
+    # -------------------------------------------------------------------------
+    def _update_probe_marker(self, probe_data: dict) -> None:
+        """Create or update 3D sphere marker and 2D caption for probed node."""
+        if self._renderer is None:
+            return
+
+        # 이전 프로브 마커 제거
+        if self._probe_sphere_actor is not None:
+            self._renderer.RemoveActor(self._probe_sphere_actor)
+            self._probe_sphere_actor = None
+        if self._probe_caption_actor is not None:
+            self._renderer.RemoveActor(self._probe_caption_actor)
+            self._probe_caption_actor = None
+
+        xyz = probe_data["xyz"]
+        part = probe_data["part"]
+        node = probe_data["node"]
+        vm = probe_data["von_mises"]
+        u_mag = probe_data["u_mag"]
+        e_val = probe_data["E_MPa"]
+
+        # 구 마커 (노란색, 반경 0.3mm)
+        sphere = vtk.vtkSphereSource()
+        sphere.SetCenter(*xyz)
+        sphere.SetRadius(0.35)
+        sphere.SetThetaResolution(16)
+        sphere.SetPhiResolution(16)
+
+        mapper = vtk.vtkPolyDataMapper()
+        mapper.SetInputConnection(sphere.GetOutputPort())
+
+        actor = vtk.vtkActor()
+        actor.SetMapper(mapper)
+        actor.GetProperty().SetColor(1.0, 0.9, 0.1)  # Yellow
+        actor.GetProperty().SetAmbient(0.8)
+
+        # 캡션 액터
+        lines = [f"[{part}] Node #{node}"]
+        if vm is not None:
+            lines.append(f"von Mises: {vm:.2f} MPa")
+        lines.append(f"U: {u_mag:.4f} mm")
+        if e_val is not None:
+            lines.append(f"E: {e_val:.0f} MPa")
+        caption_text = "\n".join(lines)
+
+        caption = vtk.vtkCaptionActor2D()
+        caption.SetAttachmentPoint(*xyz)
+        caption.SetCaption(caption_text)
+        caption.BorderOff()
+        caption.GetCaptionTextProperty().SetFontSize(10)
+        caption.GetCaptionTextProperty().SetColor(1.0, 1.0, 1.0)
+        caption.GetCaptionTextProperty().SetBold(True)
+        caption.GetCaptionTextProperty().SetShadow(True)
+
+        self._renderer.AddActor(actor)
+        self._renderer.AddActor(caption)
+        self._probe_sphere_actor = actor
+        self._probe_caption_actor = caption
+
+        if self._controller is not None:
+            self._controller._render()
+
+    def mark_maximum(
+        self,
+        field: str = "von_mises",
+        part_name: Optional[str] = None,
+        focus_camera: bool = False,
+    ) -> Optional[dict]:
+        """
+        Mark the maximum value location with a sphere marker and label, and emit max_marked.
+
+        Args:
+            field: Target scalar field ('von_mises', 's_max_principal', 's_min_principal', 'u_mag').
+            part_name: Optional part name filter.
+            focus_camera: If True, moves the camera focal point to the peak location.
+
+        Returns:
+            dict: Max location metadata or None if no valid data.
+        """
+        if self._controller is None or self._controller._model is None or self._controller._rs is None:
+            return None
+
+        max_info = max_stress_location(
+            rs=self._controller._rs,
+            model=self._controller._model,
+            field=field,
+            part_name=part_name,
+        )
+
+        if max_info.get("value") is None or max_info.get("coord") is None:
+            return None
+
+        # 이전 최대값 마커 제거
+        if self._max_sphere_actor is not None and self._renderer is not None:
+            self._renderer.RemoveActor(self._max_sphere_actor)
+            self._max_sphere_actor = None
+        if self._max_caption_actor is not None and self._renderer is not None:
+            self._renderer.RemoveActor(self._max_caption_actor)
+            self._max_caption_actor = None
+
+        coord = max_info["coord"]
+        val = max_info["value"]
+        p_name = max_info["part_name"]
+
+        # 필드 표시 정보
+        cfg = FIELD_DISPLAY_CONFIG.get(field, {"title": field, "unit": ""})
+        title = cfg["title"]
+        unit = cfg["unit"]
+
+        # 구 마커 (빨간색, 반경 0.5mm)
+        sphere = vtk.vtkSphereSource()
+        sphere.SetCenter(*coord)
+        sphere.SetRadius(0.5)
+        sphere.SetThetaResolution(16)
+        sphere.SetPhiResolution(16)
+
+        mapper = vtk.vtkPolyDataMapper()
+        mapper.SetInputConnection(sphere.GetOutputPort())
+
+        actor = vtk.vtkActor()
+        actor.SetMapper(mapper)
+        actor.GetProperty().SetColor(1.0, 0.2, 0.2)  # Red
+        actor.GetProperty().SetAmbient(0.8)
+
+        # 캡션 액터
+        caption_text = f"최대 {title} {val:.1f} {unit} @ {p_name}"
+        caption = vtk.vtkCaptionActor2D()
+        caption.SetAttachmentPoint(*coord)
+        caption.SetCaption(caption_text)
+        caption.BorderOff()
+        caption.GetCaptionTextProperty().SetFontSize(11)
+        caption.GetCaptionTextProperty().SetColor(1.0, 0.85, 0.85)
+        caption.GetCaptionTextProperty().SetBold(True)
+        caption.GetCaptionTextProperty().SetShadow(True)
+
+        if self._renderer is not None:
+            self._renderer.AddActor(actor)
+            self._renderer.AddActor(caption)
+            self._max_sphere_actor = actor
+            self._max_caption_actor = caption
+
+            # 카메라 초점 이동 옵션
+            if focus_camera:
+                cam = self._renderer.GetActiveCamera()
+                if cam is not None:
+                    cam.SetFocalPoint(*coord)
+
+        self.max_marked.emit(max_info)
+
+        if self._controller is not None:
+            self._controller._render()
+
+        return max_info
+
+    def clear_markers(self) -> None:
+        """Remove all probe and maximum markers and labels from the renderer."""
+        if self._renderer is not None:
+            if self._probe_sphere_actor is not None:
+                self._renderer.RemoveActor(self._probe_sphere_actor)
+                self._probe_sphere_actor = None
+            if self._probe_caption_actor is not None:
+                self._renderer.RemoveActor(self._probe_caption_actor)
+                self._probe_caption_actor = None
+            if self._max_sphere_actor is not None:
+                self._renderer.RemoveActor(self._max_sphere_actor)
+                self._max_sphere_actor = None
+            if self._max_caption_actor is not None:
+                self._renderer.RemoveActor(self._max_caption_actor)
+                self._max_caption_actor = None
+
+        if self._controller is not None:
+            self._controller._render()
