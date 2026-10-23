@@ -129,15 +129,15 @@ class ResultSet:
         source_frd: Path to the source .frd file.
     """
     time: float
-    u: np.ndarray                # (Ntot,3) mm
-    u_mag: np.ndarray            # (Ntot,)
-    stress6: np.ndarray | None   # (Ntot,6) MPa, 순서 SXX SYY SZZ SXY SYZ SZX
-    von_mises: np.ndarray | None # (Ntot,)
-    s_max_principal: np.ndarray | None   # (Ntot,)  인장 방향이 양수
-    s_min_principal: np.ndarray | None   # (Ntot,)  압축 방향이 음수
-    strain6: np.ndarray | None   # (Ntot,6)
-    rf: np.ndarray | None        # (Ntot,3) 반력 N
-    source_frd: str              # 원본 .frd 경로
+    u: np.ndarray | None = None                # (Ntot,3) mm
+    u_mag: np.ndarray | None = None            # (Ntot,)
+    stress6: np.ndarray | None = None   # (Ntot,6) MPa, 순서 SXX SYY SZZ SXY SYZ SZX
+    von_mises: np.ndarray | None = None # (Ntot,)
+    s_max_principal: np.ndarray | None = None   # (Ntot,)  인장 방향이 양수
+    s_min_principal: np.ndarray | None = None   # (Ntot,)  압축 방향이 음수
+    strain6: np.ndarray | None = None   # (Ntot,6)
+    rf: np.ndarray | None = None        # (Ntot,3) 반력 N
+    source_frd: str = ""              # 원본 .frd 경로
 
     def slice_for_part(self, model: MeshModel, part_name: str) -> slice:
         """
