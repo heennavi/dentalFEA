@@ -12,6 +12,19 @@ from .frd_parser import (
     parse_frd,
     parse_frd_text,
 )
+from .result_fields import (
+    von_mises,
+    principal_stresses,
+    build_result_set,
+    part_statistics,
+    reaction_balance,
+)
+from .vtk_builder import (
+    build_part_grid,
+    attach_results,
+    surface_of,
+    set_deform_scale,
+)
 
 __all__ = [
     "read_frd_displacements",
@@ -19,4 +32,13 @@ __all__ = [
     "read_frd_results",
     "parse_frd",
     "parse_frd_text",
+    "von_mises",
+    "principal_stresses",
+    "build_result_set",
+    "part_statistics",
+    "reaction_balance",
+    "build_part_grid",
+    "attach_results",
+    "surface_of",
+    "set_deform_scale",
 ]
