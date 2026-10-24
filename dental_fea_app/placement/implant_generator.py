@@ -379,8 +379,14 @@ class Implant3DGenerator:
         return normals.GetOutput()
 
 
-def generate_abutment_polydata(spec: AbutmentSpec) -> vtk.vtkPolyData:
-    """치과 어버트먼트 3D 메쉬 생성 (Hex 돌기, Collar, Morse Taper 상부, 상부 스크루 홀)"""
+def generate_abutment_polydata(
+    spec: AbutmentSpec,
+    implant_spec: Optional[ImplantSpec] = None,
+) -> vtk.vtkPolyData:
+    """
+    치과 어버트먼트 3D 메쉬 생성 (임플란트 홀 맞춤 Hex 돌기, Collar, Morse Taper 상부).
+    임플란트 홀에 최적화된 하부 돌출부와 자가교차 없는 완전한 닫힌 2-매니폴드 표면을 생성합니다.
+    """
     diameter_mm = float(spec.diameter_mm)
     flare_deg = float(spec.flare_deg)
     collar_len_mm = float(spec.collar_len_mm)
@@ -394,6 +400,14 @@ def generate_abutment_polydata(spec: AbutmentSpec) -> vtk.vtkPolyData:
     r_upper_bottom = max(0.6, r_collar_top - 0.5)
     taper_rad = math.radians(2.0)
     r_upper_top = max(0.5, r_upper_bottom - upper_len_mm * math.tan(taper_rad))
+
+    # 임플란트 홀에 맞춘 Hex 하부 돌출부 크기 및 깊이 자동 변형
+    if implant_spec is not None:
+        hex_r = float(implant_spec.diameter_mm) * 0.30
+        hex_depth = min(2.5, float(implant_spec.length_mm) * 0.35)
+    else:
+        hex_r = min(1.2, r_bottom * 0.60)
+        hex_depth = float(spec.hex_height_mm) if getattr(spec, "hex_height_mm", 0) > 0.5 else 2.5
 
     points = vtk.vtkPoints()
     polys = vtk.vtkCellArray()
@@ -412,29 +426,30 @@ def generate_abutment_polydata(spec: AbutmentSpec) -> vtk.vtkPolyData:
         tri2.GetPointIds().SetId(2, p4)
         polys.InsertNextCell(tri2)
 
-    # 1. Hex Boss (z = -3.0 to 0.0)
-    hex_r = min(1.2, r_bottom * 0.75)
+    def add_tri(p1, p2, p3):
+        tri = vtk.vtkTriangle()
+        tri.GetPointIds().SetId(0, p1)
+        tri.GetPointIds().SetId(1, p2)
+        tri.GetPointIds().SetId(2, p3)
+        polys.InsertNextCell(tri)
+
+    # 1. Hex 하부 돌출부 바닥 캡 및 측면 기둥 (z = -hex_depth ~ 0.0)
     hex_bottom_pts = []
     hex_top_pts = []
     for i in range(6):
         ang = i * (2.0 * math.pi / 6.0)
-        hex_bottom_pts.append(points.InsertNextPoint(hex_r * math.cos(ang), hex_r * math.sin(ang), -3.0))
+        hex_bottom_pts.append(points.InsertNextPoint(hex_r * math.cos(ang), hex_r * math.sin(ang), -hex_depth))
         hex_top_pts.append(points.InsertNextPoint(hex_r * math.cos(ang), hex_r * math.sin(ang), 0.0))
 
+    hex_bottom_center = points.InsertNextPoint(0.0, 0.0, -hex_depth)
     for i in range(6):
         inxt = (i + 1) % 6
+        # 바닥면 법선: -Z 방향
+        add_tri(hex_bottom_center, hex_bottom_pts[inxt], hex_bottom_pts[i])
+        # 기둥 옆면: 외측 방향 법선
         add_quad(hex_bottom_pts[i], hex_bottom_pts[inxt], hex_top_pts[inxt], hex_top_pts[i])
 
-    hex_bottom_center = points.InsertNextPoint(0.0, 0.0, -3.0)
-    for i in range(6):
-        inxt = (i + 1) % 6
-        tri = vtk.vtkTriangle()
-        tri.GetPointIds().SetId(0, hex_bottom_center)
-        tri.GetPointIds().SetId(1, hex_bottom_pts[inxt])
-        tri.GetPointIds().SetId(2, hex_bottom_pts[i])
-        polys.InsertNextCell(tri)
-
-    # 2. Collar (z = 0.0 to collar_len_mm)
+    # 2. Collar (z = 0.0 ~ collar_len_mm)
     n_collar_steps = max(6, int(collar_len_mm * 2))
     collar_rings = []
     for s in range(n_collar_steps + 1):
@@ -448,15 +463,24 @@ def generate_abutment_polydata(spec: AbutmentSpec) -> vtk.vtkPolyData:
         collar_rings.append(ring)
 
     base_ring = collar_rings[0]
-    base_center = points.InsertNextPoint(0.0, 0.0, 0.0)
-    for j in range(n_radial):
-        jnxt = (j + 1) % n_radial
-        tri = vtk.vtkTriangle()
-        tri.GetPointIds().SetId(0, base_center)
-        tri.GetPointIds().SetId(1, base_ring[jnxt])
-        tri.GetPointIds().SetId(2, base_ring[j])
-        polys.InsertNextCell(tri)
 
+    # Hex 상단(6정점)과 Collar 바닥 원주(36정점) 간의 일체형 환형 전이면(Annular Transition)
+    for i in range(6):
+        h0 = hex_top_pts[i]
+        h1 = hex_top_pts[(i + 1) % 6]
+        j_start = i * 6
+        for k in range(6):
+            b0 = base_ring[(j_start + k) % n_radial]
+            b1 = base_ring[(j_start + k + 1) % n_radial]
+            if k < 3:
+                add_tri(h0, b1, b0)
+            elif k == 3:
+                add_tri(h0, b1, b0)
+                add_tri(h0, h1, b1)
+            else:
+                add_tri(h1, b1, b0)
+
+    # Collar 옆면 쿼드
     for s in range(len(collar_rings) - 1):
         r1 = collar_rings[s]
         r2 = collar_rings[s + 1]
@@ -464,7 +488,7 @@ def generate_abutment_polydata(spec: AbutmentSpec) -> vtk.vtkPolyData:
             jnxt = (j + 1) % n_radial
             add_quad(r1[j], r1[jnxt], r2[jnxt], r2[j])
 
-    # 3. Upper Post with Angulation
+    # 3. Upper Post (지대주 상부 기둥)
     rot_trans = vtk.vtkTransform()
     rot_trans.Identity()
     rot_trans.RotateZ(upper_dir_deg)
@@ -500,39 +524,13 @@ def generate_abutment_polydata(spec: AbutmentSpec) -> vtk.vtkPolyData:
             jnxt = (j + 1) % n_radial
             add_quad(r1[j], r1[jnxt], r2[jnxt], r2[j])
 
-    # 4. Top Concave Well
+    # 4. Upper Post 상단 캡 (단일 폐곡면)
     upper_top_ring = upper_rings[-1]
-    r_well = min(1.0, r_upper_top * 0.7)
-    depth_well = min(3.0, upper_len_mm * 0.8)
-
-    well_lip_ring = []
-    well_floor_ring = []
-    for j in range(n_radial):
-        ang = j * (2.0 * math.pi / float(n_radial))
-        lx = r_well * math.cos(ang)
-        ly = r_well * math.sin(ang)
-        wx1, wy1, wz1 = rot_trans.TransformPoint(lx, ly, upper_len_mm)
-        well_lip_ring.append(points.InsertNextPoint(wx1, wy1, collar_len_mm + wz1))
-        wx2, wy2, wz2 = rot_trans.TransformPoint(lx, ly, upper_len_mm - depth_well)
-        well_floor_ring.append(points.InsertNextPoint(wx2, wy2, collar_len_mm + wz2))
-
+    top_center_local = rot_trans.TransformPoint(0.0, 0.0, upper_len_mm)
+    top_center_pid = points.InsertNextPoint(top_center_local[0], top_center_local[1], collar_len_mm + top_center_local[2])
     for j in range(n_radial):
         jnxt = (j + 1) % n_radial
-        add_quad(upper_top_ring[j], upper_top_ring[jnxt], well_lip_ring[jnxt], well_lip_ring[j])
-
-    for j in range(n_radial):
-        jnxt = (j + 1) % n_radial
-        add_quad(well_lip_ring[j], well_floor_ring[j], well_floor_ring[jnxt], well_lip_ring[jnxt])
-
-    floor_center_local = rot_trans.TransformPoint(0.0, 0.0, upper_len_mm - depth_well)
-    floor_center_pid = points.InsertNextPoint(floor_center_local[0], floor_center_local[1], collar_len_mm + floor_center_local[2])
-    for j in range(n_radial):
-        jnxt = (j + 1) % n_radial
-        tri = vtk.vtkTriangle()
-        tri.GetPointIds().SetId(0, floor_center_pid)
-        tri.GetPointIds().SetId(1, well_floor_ring[jnxt])
-        tri.GetPointIds().SetId(2, well_floor_ring[j])
-        polys.InsertNextCell(tri)
+        add_tri(top_center_pid, upper_top_ring[j], upper_top_ring[jnxt])
 
     polydata = vtk.vtkPolyData()
     polydata.SetPoints(points)
@@ -548,10 +546,17 @@ def generate_abutment_polydata(spec: AbutmentSpec) -> vtk.vtkPolyData:
     return normals.GetOutput()
 
 
-def generate_prosthetic_polydata(spec: ProstheticSpec) -> vtk.vtkPolyData:
-    """해부학적 치관(Crown) 3D 메쉬 생성"""
+def generate_prosthetic_polydata(
+    spec: ProstheticSpec,
+    abutment_spec: Optional[AbutmentSpec] = None,
+) -> vtk.vtkPolyData:
+    """
+    해부학적 치관(Crown) 3D 메쉬 생성.
+    abutment_spec이 주어지면 하부 Abutment 상부 기둥에 완벽히 맞닿는 오목한 내부 홀(Internal Cavity)을
+    자동으로 형성하여 간섭 없는 일체형 닫힌 2-매니폴드 솔리드를 생성합니다.
+    """
     tooth_num = int(spec.tooth_number)
-    base_diameter_mm = float(spec.base_diameter_mm)
+    base_diameter_mm = float(abutment_spec.collar_top_diameter_mm) if abutment_spec is not None else float(spec.base_diameter_mm)
     length_mm = float(spec.length_mm)
     width_mm = float(spec.width_mm)
     depth_mm = float(spec.depth_mm)
@@ -574,6 +579,26 @@ def generate_prosthetic_polydata(spec: ProstheticSpec) -> vtk.vtkPolyData:
     n_height_steps = 14
     r_base = base_diameter_mm / 2.0
     rot_rad = math.radians(rot_deg)
+
+    def add_quad(p1, p2, p3, p4):
+        tri1 = vtk.vtkTriangle()
+        tri1.GetPointIds().SetId(0, p1)
+        tri1.GetPointIds().SetId(1, p2)
+        tri1.GetPointIds().SetId(2, p3)
+        polys.InsertNextCell(tri1)
+
+        tri2 = vtk.vtkTriangle()
+        tri2.GetPointIds().SetId(0, p1)
+        tri2.GetPointIds().SetId(1, p3)
+        tri2.GetPointIds().SetId(2, p4)
+        polys.InsertNextCell(tri2)
+
+    def add_tri(p1, p2, p3):
+        tri = vtk.vtkTriangle()
+        tri.GetPointIds().SetId(0, p1)
+        tri.GetPointIds().SetId(1, p2)
+        tri.GetPointIds().SetId(2, p3)
+        polys.InsertNextCell(tri)
 
     rings = []
     for s in range(n_height_steps + 1):
@@ -634,45 +659,81 @@ def generate_prosthetic_polydata(spec: ProstheticSpec) -> vtk.vtkPolyData:
             ring.append(pid)
         rings.append(ring)
 
-    # Bottom Cap
-    base_center = points.InsertNextPoint(0.0, 0.0, 0.0)
-    b_ring = rings[0]
-    for j in range(n_radial):
-        jnxt = (j + 1) % n_radial
-        tri = vtk.vtkTriangle()
-        tri.GetPointIds().SetId(0, base_center)
-        tri.GetPointIds().SetId(1, b_ring[jnxt])
-        tri.GetPointIds().SetId(2, b_ring[j])
-        polys.InsertNextCell(tri)
-
-    # Side walls
+    # 1. 외측 측면 벽 (Outer Side walls)
     for s in range(len(rings) - 1):
         r1 = rings[s]
         r2 = rings[s + 1]
         for j in range(n_radial):
             jnxt = (j + 1) % n_radial
-            tri1 = vtk.vtkTriangle()
-            tri1.GetPointIds().SetId(0, r1[j])
-            tri1.GetPointIds().SetId(1, r1[jnxt])
-            tri1.GetPointIds().SetId(2, r2[jnxt])
-            polys.InsertNextCell(tri1)
+            add_quad(r1[j], r1[jnxt], r2[jnxt], r2[j])
 
-            tri2 = vtk.vtkTriangle()
-            tri2.GetPointIds().SetId(0, r1[j])
-            tri2.GetPointIds().SetId(1, r2[jnxt])
-            tri2.GetPointIds().SetId(2, r2[j])
-            polys.InsertNextCell(tri2)
-
-    # Top Cap
+    # 2. 외측 상단 캡 (Outer Top Cap)
     top_center = points.InsertNextPoint(0.0, 0.0, length_mm)
     t_ring = rings[-1]
     for j in range(n_radial):
         jnxt = (j + 1) % n_radial
-        tri = vtk.vtkTriangle()
-        tri.GetPointIds().SetId(0, top_center)
-        tri.GetPointIds().SetId(1, t_ring[j])
-        tri.GetPointIds().SetId(2, t_ring[jnxt])
-        polys.InsertNextCell(tri)
+        add_tri(top_center, t_ring[j], t_ring[jnxt])
+
+    # 3. 바닥 및 내부 오목 홀 (Bottom & Inner Cavity)
+    b_ring = rings[0]
+    if abutment_spec is not None:
+        u_len = float(abutment_spec.upper_len_mm)
+        u_ang = float(abutment_spec.upper_angle_deg)
+        u_dir = float(abutment_spec.upper_dir_deg)
+        flare_rad = math.radians(abutment_spec.flare_deg)
+        r_collar_top_val = (abutment_spec.diameter_mm / 2.0) + abutment_spec.collar_len_mm * math.tan(flare_rad)
+        r_upper_bottom = max(0.6, r_collar_top_val - 0.5)
+        taper_rad = math.radians(2.0)
+
+        rot_trans = vtk.vtkTransform()
+        rot_trans.Identity()
+        rot_trans.RotateZ(u_dir)
+        rot_trans.RotateX(u_ang)
+        rot_trans.RotateZ(-u_dir)
+
+        n_upper_steps = max(6, int(u_len * 2))
+        cav_rings = []
+        for s in range(n_upper_steps + 1):
+            t = s / float(n_upper_steps)
+            uz_local = t * u_len
+            ur = r_upper_bottom - uz_local * math.tan(taper_rad)
+            ring = []
+            for j in range(n_radial):
+                ang = j * (2.0 * math.pi / float(n_radial))
+                lx = ur * math.cos(ang)
+                ly = ur * math.sin(ang)
+                lz = uz_local
+                wx, wy, wz = rot_trans.TransformPoint(lx, ly, lz)
+                ring.append(points.InsertNextPoint(wx, wy, wz))
+            cav_rings.append(ring)
+
+        # 바닥 환형 마진 (외측 링과 내부 홀 입구 링 사이를 연결, 법선 -Z)
+        c_bot_ring = cav_rings[0]
+        for j in range(n_radial):
+            jnxt = (j + 1) % n_radial
+            add_quad(c_bot_ring[j], c_bot_ring[jnxt], b_ring[jnxt], b_ring[j])
+
+        # 내부 공동 내벽 (법선은 솔리드 내부를 향함)
+        for s in range(len(cav_rings) - 1):
+            r1 = cav_rings[s]
+            r2 = cav_rings[s + 1]
+            for j in range(n_radial):
+                jnxt = (j + 1) % n_radial
+                add_quad(r1[jnxt], r1[j], r2[j], r2[jnxt])
+
+        # 내부 공동 천장 (내부 캡)
+        cav_top_ring = cav_rings[-1]
+        cav_top_center = rot_trans.TransformPoint(0.0, 0.0, u_len)
+        cav_top_pid = points.InsertNextPoint(cav_top_center[0], cav_top_center[1], cav_top_center[2])
+        for j in range(n_radial):
+            jnxt = (j + 1) % n_radial
+            add_tri(cav_top_pid, cav_top_ring[jnxt], cav_top_ring[j])
+    else:
+        # 단독 사용 시 평평한 바닥 캡
+        base_center = points.InsertNextPoint(0.0, 0.0, 0.0)
+        for j in range(n_radial):
+            jnxt = (j + 1) % n_radial
+            add_tri(base_center, b_ring[jnxt], b_ring[j])
 
     polydata = vtk.vtkPolyData()
     polydata.SetPoints(points)

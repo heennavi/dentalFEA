@@ -164,6 +164,8 @@ class AnalysisConfig:
     n_threads: int
     mesh_algorithm_3d: str = "auto"       # "auto", "delaunay", "netgen", "hxt"
     optimize_netgen: bool = True          # Netgen 3D 볼륨 최적화기 활성화 여부
+    mesh_size_abutment_mm: Optional[float] = None  # Abutment target mesh edge size (mm)
+    mesh_size_crown_mm: Optional[float] = None     # Crown target mesh edge size (mm)
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert configuration to JSON-serializable dictionary."""
@@ -175,11 +177,15 @@ class AnalysisConfig:
             "n_threads": int(self.n_threads),
             "mesh_algorithm_3d": str(self.mesh_algorithm_3d),
             "optimize_netgen": bool(self.optimize_netgen),
+            "mesh_size_abutment_mm": float(self.mesh_size_abutment_mm) if self.mesh_size_abutment_mm is not None else None,
+            "mesh_size_crown_mm": float(self.mesh_size_crown_mm) if self.mesh_size_crown_mm is not None else None,
         }
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "AnalysisConfig":
         """Instantiate AnalysisConfig from dictionary."""
+        abut_sz = data.get("mesh_size_abutment_mm")
+        crown_sz = data.get("mesh_size_crown_mm")
         return cls(
             mesh_size_far_mm=float(data.get("mesh_size_far_mm", 2.0)),
             mesh_size_near_mm=float(data.get("mesh_size_near_mm", 0.40)),
@@ -188,4 +194,6 @@ class AnalysisConfig:
             n_threads=int(data.get("n_threads", 8)),
             mesh_algorithm_3d=str(data.get("mesh_algorithm_3d", "auto")),
             optimize_netgen=bool(data.get("optimize_netgen", True)),
+            mesh_size_abutment_mm=float(abut_sz) if abut_sz is not None else None,
+            mesh_size_crown_mm=float(crown_sz) if crown_sz is not None else None,
         )

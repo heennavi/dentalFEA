@@ -182,26 +182,38 @@ class GeometryPanel(QWidget):
         view_layout.setContentsMargins(6, 6, 6, 6)
         view_layout.setSpacing(4)
 
-        # 가시성 체크박스 3개 (피질골, 수질골, 임플란트)
+        # 가시성 체크박스 5개 (피질골, 수질골, 임플란트, 지대주, 크라운)
         chk_layout = QHBoxLayout()
-        chk_layout.setSpacing(6)
+        chk_layout.setSpacing(4)
         self.chk_cortical = QCheckBox("피질골 ■", self.group_vis)
-        self.chk_cortical.setStyleSheet("color: #e06c75; font-weight: bold;")
+        self.chk_cortical.setStyleSheet("color: #e06c75; font-weight: bold; font-size: 11px;")
         self.chk_cortical.setChecked(True)
         self.chk_cortical.toggled.connect(self._on_display_toggled)
         chk_layout.addWidget(self.chk_cortical)
 
         self.chk_cancellous = QCheckBox("수질골 ■", self.group_vis)
-        self.chk_cancellous.setStyleSheet("color: #61afef; font-weight: bold;")
+        self.chk_cancellous.setStyleSheet("color: #61afef; font-weight: bold; font-size: 11px;")
         self.chk_cancellous.setChecked(True)
         self.chk_cancellous.toggled.connect(self._on_display_toggled)
         chk_layout.addWidget(self.chk_cancellous)
 
         self.chk_implant = QCheckBox("임플란트 ■", self.group_vis)
-        self.chk_implant.setStyleSheet("color: #d19a66; font-weight: bold;")
+        self.chk_implant.setStyleSheet("color: #d19a66; font-weight: bold; font-size: 11px;")
         self.chk_implant.setChecked(True)
         self.chk_implant.toggled.connect(self._on_display_toggled)
         chk_layout.addWidget(self.chk_implant)
+
+        self.chk_abutment = QCheckBox("지대주 ■", self.group_vis)
+        self.chk_abutment.setStyleSheet("color: #e5c07b; font-weight: bold; font-size: 11px;")
+        self.chk_abutment.setChecked(True)
+        self.chk_abutment.toggled.connect(self._on_display_toggled)
+        chk_layout.addWidget(self.chk_abutment)
+
+        self.chk_crown = QCheckBox("크라운 ■", self.group_vis)
+        self.chk_crown.setStyleSheet("color: #c678dd; font-weight: bold; font-size: 11px;")
+        self.chk_crown.setChecked(True)
+        self.chk_crown.toggled.connect(self._on_display_toggled)
+        chk_layout.addWidget(self.chk_crown)
         view_layout.addLayout(chk_layout)
 
         # 단면 클리핑 (평면 컷팅)
@@ -406,15 +418,27 @@ class GeometryPanel(QWidget):
         c_wt = rep.get("cortical_watertight", False)
         cn_wt = rep.get("cancellous_watertight", False)
         i_wt = rep.get("implant_watertight", False)
+        a_wt = rep.get("abutment_watertight", False)
+        cr_wt = rep.get("crown_watertight", False)
 
         c_wt_html = "<span style='color:#98c379;'>정상 (Watertight)</span>" if c_wt else "<span style='color:#ff5555; font-weight:bold;'>비-watertight (오류)</span>"
         cn_wt_html = "<span style='color:#98c379;'>정상 (Watertight)</span>" if cn_wt else "<span style='color:#ff5555; font-weight:bold;'>비-watertight (오류)</span>"
         i_wt_html = "<span style='color:#98c379;'>정상 (Watertight)</span>" if i_wt else "<span style='color:#ff5555; font-weight:bold;'>비-watertight (오류)</span>"
+        a_wt_html = "<span style='color:#98c379;'>정상</span>" if a_wt else "<span style='color:#ff5555;'>비-watertight</span>"
+        cr_wt_html = "<span style='color:#98c379;'>정상</span>" if cr_wt else "<span style='color:#ff5555;'>비-watertight</span>"
 
         c_pc = rep.get("cortical_pieces", 1)
         cn_pc = rep.get("cancellous_pieces", 1)
         c_pc_html = f"{c_pc}개" if c_pc == 1 else f"<span style='color:#ff5555; font-weight:bold;'>{c_pc}개 (조각 분리됨)</span>"
         cn_pc_html = f"{cn_pc}개" if cn_pc == 1 else f"<span style='color:#ff5555; font-weight:bold;'>{cn_pc}개 (조각 분리됨)</span>"
+
+        abut_vol = rep.get("abutment_volume", 0.0)
+        crown_vol = rep.get("crown_volume", 0.0)
+        extra_parts_html = ""
+        if abut_vol > 0:
+            extra_parts_html += f"• 지대주(Abutment): {abut_vol:.1f} mm³ ({a_wt_html})<br>"
+        if crown_vol > 0:
+            extra_parts_html += f"• 보철물(Crown): {crown_vol:.1f} mm³ ({cr_wt_html})<br>"
 
         html = f"""
         <div style='line-height: 140%;'>
@@ -422,6 +446,7 @@ class GeometryPanel(QWidget):
             • 피질골: {rep.get('cortical_volume', 0.0):.1f} mm³ ({c_wt_html}, {c_pc_html})<br>
             • 수질골: {rep.get('cancellous_volume', 0.0):.1f} mm³ ({cn_wt_html}, {cn_pc_html})<br>
             • 임플란트: {rep.get('implant_volume', 0.0):.1f} mm³ ({i_wt_html})<br>
+            {extra_parts_html}
             • 원본 대비 제거된 뼈: <b style='color:#e5c07b;'>{rep.get('removed_bone_volume', 0.0):.1f} mm³</b><br>
             <hr style='border: 0; border-top: 1px solid #3c3c46; margin: 3px 0;'>
             <b style='color:#98c379;'>[접촉 면적 (Contact Area, &le;0.05mm)]</b><br>
@@ -437,6 +462,8 @@ class GeometryPanel(QWidget):
             "cortical": self.chk_cortical.isChecked(),
             "cancellous": self.chk_cancellous.isChecked(),
             "implant": self.chk_implant.isChecked(),
+            "abutment": getattr(self, "chk_abutment", None) and self.chk_abutment.isChecked(),
+            "crown": getattr(self, "chk_crown", None) and self.chk_crown.isChecked(),
             "opacity": 0.85
         }
         self.state_mgr.set_fea_visibility(vis)

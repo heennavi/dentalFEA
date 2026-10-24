@@ -966,20 +966,26 @@ class VolumeViewerWindow(QMainWindow):
     def _on_implant_selectable_toggled(self, checked: bool):
         """임플란트 선택 가능/불가능 토글 슬롯"""
         if not checked:
-            if hasattr(self, "implant_gizmo_3d") and self.implant_gizmo_3d.is_attached:
+            if hasattr(self, "implant_gizmo_3d"):
                 self.implant_gizmo_3d.detach()
-                self.render()
+            if hasattr(self.state_mgr, "implant_placement_mgr") and self.state_mgr.implant_placement_mgr:
+                for imp in self.state_mgr.implant_placement_mgr.implants.values():
+                    if imp.axes_assembly:
+                        imp.axes_assembly.SetVisibility(False)
+            self.render()
         else:
             sel_imp = self.state_mgr.implant_placement_mgr.get_selected_implant()
             if sel_imp and hasattr(self, "implant_gizmo_3d") and not getattr(self, "is_result_view_mode", False):
                 self.implant_gizmo_3d.attach_to_implant(sel_imp.id)
-                self.render()
+                if sel_imp.axes_assembly:
+                    sel_imp.axes_assembly.SetVisibility(True)
+            self.render()
 
     def set_result_view_mode(self, enabled: bool):
         """
         해석 결과 3D 뷰 모드 설정.
-        enabled=True: 임플란트 선택 체크박스를 해제하고 기즈모를 숨김.
-        enabled=False: 원래 상태로 복구(임플란트 선택 체크박스를 다시 체크하고 기즈모 복구).
+        enabled=True: 임플란트 선택 체크박스를 해제하고 기즈모 및 축선을 숨김.
+        enabled=False: 원래 상태로 복구(임플란트 선택 체크박스를 다시 체크하고 기즈모 및 축선 복구).
         """
         self.is_result_view_mode = enabled
         if hasattr(self, "chk_implant_selectable"):
@@ -988,14 +994,20 @@ class VolumeViewerWindow(QMainWindow):
             self.chk_implant_selectable.blockSignals(False)
 
         if enabled:
-            if hasattr(self, "implant_gizmo_3d") and self.implant_gizmo_3d.is_attached:
+            if hasattr(self, "implant_gizmo_3d"):
                 self.implant_gizmo_3d.detach()
-                self.render()
+            if hasattr(self.state_mgr, "implant_placement_mgr") and self.state_mgr.implant_placement_mgr:
+                for imp in self.state_mgr.implant_placement_mgr.implants.values():
+                    if imp.axes_assembly:
+                        imp.axes_assembly.SetVisibility(False)
+            self.render()
         else:
             sel_imp = self.state_mgr.implant_placement_mgr.get_selected_implant()
             if sel_imp and hasattr(self, "implant_gizmo_3d"):
                 self.implant_gizmo_3d.attach_to_implant(sel_imp.id)
-                self.render()
+                if sel_imp.axes_assembly:
+                    sel_imp.axes_assembly.SetVisibility(True)
+            self.render()
 
 
     def _toggle_settings_panel(self, checked: bool):
@@ -1892,6 +1904,10 @@ class VolumeViewerWindow(QMainWindow):
         )
         if not can_select:
             self.implant_gizmo_3d.detach()
+            if hasattr(self.state_mgr, "implant_placement_mgr") and self.state_mgr.implant_placement_mgr:
+                for imp in self.state_mgr.implant_placement_mgr.implants.values():
+                    if imp.axes_assembly:
+                        imp.axes_assembly.SetVisibility(False)
             return
         if implant_id and implant_id in self.state_mgr.implant_placement_mgr.implants:
             self.implant_gizmo_3d.attach_to_implant(implant_id)

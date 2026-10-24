@@ -184,7 +184,7 @@ class FeaController(QObject):
                 preset=preset,
             )
 
-            # 2. 임플란트 파트 물성 매핑 (Titanium)
+            # 2. 임플란트, 지대주, 보철물(Crown) 파트 물성 매핑
             all_materials: List[MaterialDef] = list(bone_assign.materials)
             elem_mat_dict: Dict[str, np.ndarray] = {
                 "bone": bone_assign.element_material["bone"]
@@ -197,6 +197,48 @@ class FeaController(QObject):
                 ti_indices = ti_assign.element_material["implant"] + ti_offset
                 elem_mat_dict["implant"] = ti_indices
                 all_materials.extend(ti_assign.materials)
+
+            abutment_part = mesh_model.get_part("abutment")
+            if abutment_part is not None:
+                abut_cfg = preset.get("abutment_titanium", preset.get("titanium", {"E": 110000.0, "nu": 0.34, "density": 4.5e-9}))
+                abut_mat = MaterialDef(
+                    name="material_abutment",
+                    E=float(abut_cfg["E"]),
+                    nu=float(abut_cfg["nu"]),
+                    density=float(abut_cfg.get("density", 4.5e-9)),
+                )
+                abut_offset = len(all_materials)
+                elem_mat_dict["abutment"] = np.full((len(abutment_part.elements),), abut_offset, dtype=np.int64)
+                all_materials.append(abut_mat)
+
+            crown_part = mesh_model.get_part("crown") or mesh_model.get_part("prosthesis")
+            if crown_part is not None:
+                crown_mat_type = "zirconia"
+                mgr = getattr(self.state_mgr, "implant_placement_mgr", None)
+                if mgr and mgr.implants:
+                    for imp in mgr.implants.values():
+                        if imp.prosthetic and imp.prosthetic.material:
+                            m_lower = str(imp.prosthetic.material).lower()
+                            if "gold" in m_lower:
+                                crown_mat_type = "gold"
+                                break
+                            elif "ceramic" in m_lower:
+                                crown_mat_type = "ceramic"
+                                break
+                            elif "zirconia" in m_lower:
+                                crown_mat_type = "zirconia"
+                                break
+
+                cr_cfg = preset.get(crown_mat_type, preset.get("zirconia", {"E": 210000.0, "nu": 0.30, "density": 6.05e-9}))
+                crown_mat = MaterialDef(
+                    name=f"material_crown_{crown_mat_type}",
+                    E=float(cr_cfg["E"]),
+                    nu=float(cr_cfg["nu"]),
+                    density=float(cr_cfg.get("density", 6.05e-9)),
+                )
+                cr_offset = len(all_materials)
+                elem_mat_dict[crown_part.name] = np.full((len(crown_part.elements),), cr_offset, dtype=np.int64)
+                all_materials.append(crown_mat)
 
             final_assignment = MaterialAssignment(
                 element_material=elem_mat_dict,
@@ -291,10 +333,14 @@ class FeaController(QObject):
             angle = float(load_angle if load_angle is not None else p_cfg.get("tilt_deg", 0.0))
             azimuth = float(load_azimuth if load_azimuth is not None else p_cfg.get("tilt_azimuth_deg", 0.0))
 
-            # 하중 적용 타깃 파트: 임플란트 우선, 없으면 골 상단
-            target_part = mesh_model.get_part("implant")
-            if target_part is None:
-                target_part = bone_part
+            # 하중 적용 타깃 파트: Crown 우선 -> Abutment -> Implant -> Bone
+            target_part = (
+                mesh_model.get_part("crown") or
+                mesh_model.get_part("prosthesis") or
+                mesh_model.get_part("abutment") or
+                mesh_model.get_part("implant") or
+                bone_part
+            )
 
             nodes = target_part.nodes
 
@@ -340,6 +386,9 @@ class FeaController(QObject):
                 "part": target_part.name,
                 "node_ids": load_node_ids,
                 "force_N": (fx, fy, fz),
+                "magnitude_N": float(mag),
+                "tilt_deg": float(angle),
+                "angle_deg": float(angle),
             }
 
             bc_set = BoundaryConditionSet(

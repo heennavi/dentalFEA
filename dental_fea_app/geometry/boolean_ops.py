@@ -28,6 +28,8 @@ class FeaGeometry:
     implant: trimesh.Trimesh
     report: Dict[str, Any]
     bone: Optional[trimesh.Trimesh] = None
+    abutment: Optional[trimesh.Trimesh] = None
+    crown: Optional[trimesh.Trimesh] = None
 
 
 def filter_small_components(
@@ -293,15 +295,18 @@ def build_fea_geometry(
     undersize_mm: float = 0.0,
     margin_mm: Optional[float] = None,
     bone_mesh: Optional[trimesh.Trimesh] = None,
+    abutment_mesh: Optional[trimesh.Trimesh] = None,
+    crown_mesh: Optional[trimesh.Trimesh] = None,
 ) -> FeaGeometry:
     """
-    피질골, 수질골 메쉬에서 임플란트 식립 공간을 절제하고 중복 부피를 정리하여
-    FEA 입력용 솔리드 메쉬들을 구축합니다.
+    피질골, 수질골 메쉬에서 임플란트 식립 공간을 절제하고 중복 부피를 정리하며,
+    Abutment 및 Crown이 존재하는 경우 함께 포함하여 FEA 입력용 솔리드 메쉬들을 구축합니다.
 
     [설계 원칙]
     - cancellous_mesh가 비어 있거나 없는 경우 피질골 단독으로 안전하게 FEA 기하를 구성합니다.
     - bone 속성에 피질골과 수질골이 완벽하게 결합된 단일 매니폴드 뼈 메쉬를 보장하여
       체적 메싱(Volume meshing) 시 경계면 중복(overlapping facets)을 원천 방지합니다.
+    - abutment_mesh, crown_mesh가 제공되면 각각 watertight 매니폴드 메쉬로 검증/수리하여 유지합니다.
     """
     # 0. 입력 메쉬 watertight 검사 및 수리
     has_cortical = cortical_mesh is not None and len(getattr(cortical_mesh, "faces", [])) > 0
@@ -439,10 +444,28 @@ def build_fea_geometry(
     c_contact_area = calculate_contact_area(implant_final, cortical_final, threshold_mm=0.05)
     cn_contact_area = calculate_contact_area(implant_final, cancellous_final, threshold_mm=0.05) if len(cancellous_final.faces) > 0 else 0.0
 
+    # 8. Abutment 및 Crown 검증 및 처리
+    abutment_final = None
+    if abutment_mesh is not None and len(getattr(abutment_mesh, "faces", [])) > 0:
+        abutment_final = ensure_watertight(abutment_mesh, name="abutment", allow_empty=True)
+        if len(abutment_final.faces) > 0:
+            abutment_final.fix_normals()
+
+    crown_final = None
+    if crown_mesh is not None and len(getattr(crown_mesh, "faces", [])) > 0:
+        crown_final = ensure_watertight(crown_mesh, name="crown", allow_empty=True)
+        if len(crown_final.faces) > 0:
+            crown_final.fix_normals()
+
+    abutment_vol = abs(float(abutment_final.volume)) if (abutment_final is not None and len(abutment_final.faces) > 0) else 0.0
+    crown_vol = abs(float(crown_final.volume)) if (crown_final is not None and len(crown_final.faces) > 0) else 0.0
+
     report = {
         "cortical_volume": c_vol,
         "cancellous_volume": cn_vol,
         "implant_volume": i_vol,
+        "abutment_volume": abutment_vol,
+        "crown_volume": crown_vol,
         "initial_cortical_volume": initial_cortical_vol,
         "initial_cancellous_volume": initial_cancellous_vol,
         "initial_bone_volume": initial_bone_vol,
@@ -451,6 +474,8 @@ def build_fea_geometry(
         "cortical_watertight": bool(cortical_final.is_watertight),
         "cancellous_watertight": bool(cancellous_final.is_watertight) if len(cancellous_final.faces) > 0 else True,
         "implant_watertight": bool(implant_final.is_watertight),
+        "abutment_watertight": bool(abutment_final.is_watertight) if abutment_final is not None else False,
+        "crown_watertight": bool(crown_final.is_watertight) if crown_final is not None else False,
         "cortical_pieces": c_pieces,
         "cancellous_pieces": cn_pieces,
         "implant_pieces": i_pieces,
@@ -466,13 +491,15 @@ def build_fea_geometry(
         cancellous=cancellous_final,
         implant=implant_final,
         report=report,
-        bone=bone_final
+        bone=bone_final,
+        abutment=abutment_final,
+        crown=crown_final
     )
 
 
 def export_stl(geometry: FeaGeometry, out_dir: str) -> Dict[str, str]:
     """
-    FeaGeometry의 3개 솔리드(cortical, cancellous, implant)를 STL 파일로 저장합니다.
+    FeaGeometry의 솔리드들(cortical, cancellous, implant, abutment, crown)을 STL 파일로 저장합니다.
 
     Parameters
     ----------
@@ -496,5 +523,13 @@ def export_stl(geometry: FeaGeometry, out_dir: str) -> Dict[str, str]:
     geometry.cortical.export(paths["cortical"])
     geometry.cancellous.export(paths["cancellous"])
     geometry.implant.export(paths["implant"])
+
+    if geometry.abutment is not None and len(geometry.abutment.faces) > 0:
+        paths["abutment"] = os.path.join(out_dir, "abutment.stl")
+        geometry.abutment.export(paths["abutment"])
+
+    if geometry.crown is not None and len(geometry.crown.faces) > 0:
+        paths["crown"] = os.path.join(out_dir, "crown.stl")
+        geometry.crown.export(paths["crown"])
 
     return paths

@@ -166,7 +166,7 @@ class TestResultLoadArrowAndStrain(unittest.TestCase):
         # 화살표 액터(1개) + 텍스트 액터(1개) = 총 2개의 Prop만 존재 (중복 로드 추가 없이 단 1개의 하중만 렌더링)
         self.assertEqual(len(ctrl._load_arrow_actors), 2)
 
-        # 텍스트 라벨에 하중과 각도가 모두 포함되어 있는지 확인
+        # 텍스트 라벨에 하중과 각도가 모두 포함되어 있는지 확인 및 폰트 크기 1/2(7pt) 검증
         text_actor = ctrl._load_arrow_actors[1]
         self.assertIsInstance(text_actor, vtk.vtkBillboardTextActor3D)
         label_text = text_actor.GetInput()
@@ -174,6 +174,24 @@ class TestResultLoadArrowAndStrain(unittest.TestCase):
         self.assertIn("°", label_text)
         self.assertIn("100.0 N", label_text)
         self.assertIn("0.0°", label_text)
+        self.assertEqual(text_actor.GetTextProperty().GetFontSize(), 7)
+
+        # 메타데이터로 tilt_deg=30.0 지정 시 정확히 반영되는지 검증
+        bc_tilted = BoundaryConditionSet(
+            fixed_node_sets=[],
+            loads=[
+                {
+                    "part": "bone",
+                    "node_ids": np.array([0, 1]),
+                    "force_N": (10.0, 0.0, -100.0),
+                    "magnitude_N": 100.5,
+                    "tilt_deg": 30.0,
+                }
+            ]
+        )
+        ctrl.set_load_arrow_visible(True, bc_tilted)
+        tilted_actor = ctrl._load_arrow_actors[1]
+        self.assertEqual(tilted_actor.GetInput(), "100.5 N, 30.0°")
 
         # 비활성화 시 완전 제거
         ctrl.set_load_arrow_visible(False)

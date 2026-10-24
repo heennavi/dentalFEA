@@ -26,5 +26,23 @@
     "E": 110000.0,
     "nu": 0.34,
     "density": 4.5e-9
+  },
+  "gold": {
+    "E": 95000.0,
+    "nu": 0.33,
+    "density": 1.55e-8,
+    "description": "치과 주조용 금합금 Type IV (Dental Type IV Gold Alloy)"
+  },
+  "zirconia": {
+    "E": 210000.0,
+    "nu": 0.30,
+    "density": 6.05e-9,
+    "description": "치과용 이트리아 안정화 지르코니아 (Y-TZP Zirconia)"
+  },
+  "ceramic": {
+    "E": 68000.0,
+    "nu": 0.28,
+    "density": 2.4e-9,
+    "description": "치과용 도재/세라믹 (Dental Porcelain)"
   }
 }

@@ -98,25 +98,41 @@ class MeshWorker(QThread):
             if bone_mesh is None:
                 raise ValueError("골 조직(Bone) 표면 메쉬를 찾을 수 없습니다.")
 
+            abutment_mesh = getattr(self.fea_geometry, "abutment", None) if not isinstance(self.fea_geometry, dict) else self.fea_geometry.get("abutment")
+            crown_mesh = getattr(self.fea_geometry, "crown", None) if not isinstance(self.fea_geometry, dict) else self.fea_geometry.get("crown")
+
             # 메쉬 유효성/watertight 보정
             from dental_fea_app.geometry.boolean_ops import ensure_watertight
             bone_mesh = ensure_watertight(bone_mesh, name="bone")
-            if implant_mesh is not None:
+            if implant_mesh is not None and len(getattr(implant_mesh, "faces", [])) > 0:
                 implant_mesh = ensure_watertight(implant_mesh, name="implant")
+            else:
+                implant_mesh = None
+
+            if abutment_mesh is not None and len(getattr(abutment_mesh, "faces", [])) > 0:
+                abutment_mesh = ensure_watertight(abutment_mesh, name="abutment")
+            else:
+                abutment_mesh = None
+
+            if crown_mesh is not None and len(getattr(crown_mesh, "faces", [])) > 0:
+                crown_mesh = ensure_watertight(crown_mesh, name="crown")
+            else:
+                crown_mesh = None
 
             order = 2 if self.config.element_type.upper() == "C3D10" else 1
+            algo_3d = getattr(self.config, "mesh_algorithm_3d", "auto")
+            opt_netgen = getattr(self.config, "optimize_netgen", True)
 
             # 2. 임플란트 체적 메쉬 생성
             parts: List[MeshPart] = []
             implant_part: Optional[MeshPart] = None
+            abutment_part: Optional[MeshPart] = None
+            crown_part: Optional[MeshPart] = None
 
             if implant_mesh is not None and len(implant_mesh.faces) > 0:
                 self.progress.emit(15, "임플란트 3D 체적 메쉬 생성 중 (Gmsh)...")
                 if self._is_cancelled:
                     return
-
-                algo_3d = getattr(self.config, "mesh_algorithm_3d", "auto")
-                opt_netgen = getattr(self.config, "optimize_netgen", True)
 
                 implant_part = build_part_mesh(
                     name="implant",
@@ -127,15 +143,45 @@ class MeshWorker(QThread):
                     mesh_algorithm_3d=algo_3d,
                     optimize_netgen=opt_netgen,
                 )
-                parts.append(implant_part)
+
+            # 2-1. 지대주(Abutment) 체적 메쉬 생성
+            if abutment_mesh is not None and len(abutment_mesh.faces) > 0:
+                self.progress.emit(25, "지대주(Abutment) 3D 체적 메쉬 생성 중 (Gmsh)...")
+                if self._is_cancelled:
+                    return
+
+                size_abut = getattr(self.config, "mesh_size_abutment_mm", None) or self.config.mesh_size_near_mm
+                abutment_part = build_part_mesh(
+                    name="abutment",
+                    surface=abutment_mesh,
+                    size_far=size_abut,
+                    size_near=size_abut,
+                    order=order,
+                    mesh_algorithm_3d=algo_3d,
+                    optimize_netgen=opt_netgen,
+                )
+
+            # 2-2. 보철물(Crown) 체적 메쉬 생성
+            if crown_mesh is not None and len(crown_mesh.faces) > 0:
+                self.progress.emit(35, "보철물(Crown) 3D 체적 메쉬 생성 중 (Gmsh)...")
+                if self._is_cancelled:
+                    return
+
+                size_cr = getattr(self.config, "mesh_size_crown_mm", None) or self.config.mesh_size_near_mm
+                crown_part = build_part_mesh(
+                    name="crown",
+                    surface=crown_mesh,
+                    size_far=size_cr,
+                    size_near=size_cr,
+                    order=order,
+                    mesh_algorithm_3d=algo_3d,
+                    optimize_netgen=opt_netgen,
+                )
 
             # 3. 골 조직 체적 메쉬 생성 (임플란트 주변 크기장 정밀화 반영)
-            self.progress.emit(45, "골 조직 3D 체적 메쉬 생성 중 (Gmsh)...")
+            self.progress.emit(50, "골 조직 3D 체적 메쉬 생성 중 (Gmsh)...")
             if self._is_cancelled:
                 return
-
-            algo_3d = getattr(self.config, "mesh_algorithm_3d", "auto")
-            opt_netgen = getattr(self.config, "optimize_netgen", True)
 
             bone_part = build_part_mesh(
                 name="bone",
@@ -147,23 +193,52 @@ class MeshWorker(QThread):
                 mesh_algorithm_3d=algo_3d,
                 optimize_netgen=opt_netgen,
             )
-            parts.insert(0, bone_part)
+
+            parts.append(bone_part)
+            if implant_part is not None:
+                parts.append(implant_part)
+            if abutment_part is not None:
+                parts.append(abutment_part)
+            if crown_part is not None:
+                parts.append(crown_part)
 
             if self._is_cancelled:
                 return
 
-            # 4. 접촉면(TIE) 추출 (골-임플란트 경계)
+            # 4. 결합면(*TIE) 추출 (골-임플란트, 임플란트-지대주, 지대주-크라운 완전 결합)
             ties: List[TieDef] = []
             if implant_part is not None:
-                self.progress.emit(75, "골-임플란트 결합면(*TIE) 추출 중...")
-                tie = contact_pair_from_parts(
+                self.progress.emit(70, "골-임플란트 결합면(*TIE) 추출 중...")
+                tie_bone = contact_pair_from_parts(
                     part_a=implant_part,
                     part_b=bone_part,
                     tol_mm=self.contact_tolerance_mm,
                     master="a",
                     name="TIE_BONE_IMPLANT",
                 )
-                ties.append(tie)
+                ties.append(tie_bone)
+
+            if implant_part is not None and abutment_part is not None:
+                self.progress.emit(75, "임플란트-지대주 결합면(*TIE) 추출 중...")
+                tie_imp_abut = contact_pair_from_parts(
+                    part_a=implant_part,
+                    part_b=abutment_part,
+                    tol_mm=self.contact_tolerance_mm,
+                    master="auto",
+                    name="TIE_IMPLANT_ABUTMENT",
+                )
+                ties.append(tie_imp_abut)
+
+            if abutment_part is not None and crown_part is not None:
+                self.progress.emit(80, "지대주-보철물(Crown) 결합면(*TIE) 추출 중...")
+                tie_abut_crown = contact_pair_from_parts(
+                    part_a=abutment_part,
+                    part_b=crown_part,
+                    tol_mm=self.contact_tolerance_mm,
+                    master="auto",
+                    name="TIE_ABUTMENT_CROWN",
+                )
+                ties.append(tie_abut_crown)
 
             # 5. 메쉬 모델 조립 및 품질 보고서 생성
             self.progress.emit(90, "메쉬 무결성 및 품질 검사 중...")

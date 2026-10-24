@@ -343,7 +343,7 @@ class ResultViewController(QObject):
             dot = np.dot(base_vec, dir_vec)
             angle_deg = np.degrees(np.arccos(np.clip(dot, -1.0, 1.0)))
 
-            arrow_len = min(20.0, max(8.0, mag * 0.08))
+            arrow_len = min(10.0, max(4.0, mag * 0.04))
 
             transform = vtk.vtkTransform()
             start_pt = center - dir_vec * arrow_len
@@ -370,16 +370,25 @@ class ResultViewController(QObject):
             self.renderer.AddActor(actor)
             self._load_arrow_actors.append(actor)
 
-            # 하중 크기 및 경사 각도(tilt_deg) 동시 계산 (수직 하향 벡터 대비 사이각)
-            ref_down = np.array([0.0, 0.0, -1.0], dtype=np.float64)
-            cos_tilt = np.clip(np.dot(dir_vec, ref_down), -1.0, 1.0)
-            tilt_deg = float(np.degrees(np.arccos(cos_tilt)))
+            # 하중 크기 및 경사 각도(tilt_deg) 반영
+            # load에 명시적 크기/각도 메타데이터가 있으면 우선 사용, 없으면 방향 벡터에서 계산
+            if "magnitude_N" in load and load["magnitude_N"] is not None:
+                mag = float(load["magnitude_N"])
+
+            if "tilt_deg" in load and load["tilt_deg"] is not None:
+                tilt_deg = float(load["tilt_deg"])
+            elif "angle_deg" in load and load["angle_deg"] is not None:
+                tilt_deg = float(load["angle_deg"])
+            else:
+                ref_down = np.array([0.0, 0.0, -1.0], dtype=np.float64)
+                cos_tilt = np.clip(np.dot(dir_vec, ref_down), -1.0, 1.0)
+                tilt_deg = float(np.degrees(np.arccos(cos_tilt)))
 
             text_actor = vtk.vtkBillboardTextActor3D()
             text_actor.SetInput(f"{mag:.1f} N, {tilt_deg:.1f}°")
-            text_actor.SetPosition(start_pt[0], start_pt[1], start_pt[2] + 2.0)
+            text_actor.SetPosition(start_pt[0], start_pt[1], start_pt[2] + 1.0)
             text_prop = text_actor.GetTextProperty()
-            text_prop.SetFontSize(14)
+            text_prop.SetFontSize(7)
             text_prop.SetColor(1.0, 0.3, 0.3)
             text_prop.BoldOn()
             self.renderer.AddActor(text_actor)

@@ -91,6 +91,86 @@ def get_implant_world_mesh(state_mgr: StateManager) -> trimesh.Trimesh:
     return trimesh.util.concatenate(meshes)
 
 
+def get_abutment_world_mesh(state_mgr: StateManager) -> Optional[trimesh.Trimesh]:
+    """
+    StateManager에 등록된 식립 임플란트 중 Abutment가 장착된 임플란트로부터
+    World LPS mm 좌표계의 trimesh.Trimesh 객체를 추출합니다.
+    """
+    mgr = getattr(state_mgr, "implant_placement_mgr", None)
+    if not mgr or not mgr.implants:
+        return None
+
+    meshes: List[trimesh.Trimesh] = []
+    roi_b = getattr(state_mgr, "roi_bounds", None)
+
+    def is_mesh_in_roi(m: trimesh.Trimesh, roi: tuple) -> bool:
+        if roi is None or len(roi) != 6:
+            return True
+        xmin, xmax, ymin, ymax, zmin, zmax = roi
+        b_min, b_max = m.bounds
+        return (
+            b_max[0] >= xmin and b_min[0] <= xmax and
+            b_max[1] >= ymin and b_min[1] <= ymax and
+            b_max[2] >= zmin and b_min[2] <= zmax
+        )
+
+    for imp in mgr.implants.values():
+        if not imp.abutment:
+            continue
+        poly = mgr.get_transformed_abutment_polydata(imp)
+        if poly is not None:
+            tm = _vtk_polydata_to_trimesh(poly)
+            if tm and len(tm.faces) > 0:
+                if is_mesh_in_roi(tm, roi_b):
+                    meshes.append(tm)
+
+    if not meshes:
+        return None
+    if len(meshes) == 1:
+        return meshes[0]
+    return trimesh.util.concatenate(meshes)
+
+
+def get_crown_world_mesh(state_mgr: StateManager) -> Optional[trimesh.Trimesh]:
+    """
+    StateManager에 등록된 식립 임플란트 중 Crown(Prosthetic)이 장착된 임플란트로부터
+    World LPS mm 좌표계의 trimesh.Trimesh 객체를 추출합니다.
+    """
+    mgr = getattr(state_mgr, "implant_placement_mgr", None)
+    if not mgr or not mgr.implants:
+        return None
+
+    meshes: List[trimesh.Trimesh] = []
+    roi_b = getattr(state_mgr, "roi_bounds", None)
+
+    def is_mesh_in_roi(m: trimesh.Trimesh, roi: tuple) -> bool:
+        if roi is None or len(roi) != 6:
+            return True
+        xmin, xmax, ymin, ymax, zmin, zmax = roi
+        b_min, b_max = m.bounds
+        return (
+            b_max[0] >= xmin and b_min[0] <= xmax and
+            b_max[1] >= ymin and b_min[1] <= ymax and
+            b_max[2] >= zmin and b_min[2] <= zmax
+        )
+
+    for imp in mgr.implants.values():
+        if not imp.prosthetic:
+            continue
+        poly = mgr.get_transformed_prosthetic_polydata(imp)
+        if poly is not None:
+            tm = _vtk_polydata_to_trimesh(poly)
+            if tm and len(tm.faces) > 0:
+                if is_mesh_in_roi(tm, roi_b):
+                    meshes.append(tm)
+
+    if not meshes:
+        return None
+    if len(meshes) == 1:
+        return meshes[0]
+    return trimesh.util.concatenate(meshes)
+
+
 class GeometryWorker(QThread):
     """FEA 기하 생성 비동기 처리 워커"""
 
@@ -222,17 +302,22 @@ class GeometryWorker(QThread):
                     keep_largest_component=False
                 )
 
-            # 5. Boolean 차집합 및 인터페이스 분할
-            self.progress_updated.emit(3, 4, "3/4: 임플란트 식립부 Boolean 차집합 및 인터페이스 정리 중...")
+            # 5. Boolean 차집합 및 인터페이스 분할 (Abutment 및 Crown 포함)
+            self.progress_updated.emit(3, 4, "3/4: 임플란트 식립부 Boolean 차집합 및 상부구조(Abutment/Crown) 기하 정리 중...")
             if self._is_aborted:
                 return
+
+            abutment_mesh = get_abutment_world_mesh(self.state_mgr)
+            crown_mesh = get_crown_world_mesh(self.state_mgr)
 
             fea_geometry = build_fea_geometry(
                 cortical_mesh=cortical_mesh,
                 cancellous_mesh=cancellous_mesh,
                 implant_mesh=implant_mesh,
                 undersize_mm=self.undersize_mm,
-                bone_mesh=bone_mesh
+                bone_mesh=bone_mesh,
+                abutment_mesh=abutment_mesh,
+                crown_mesh=crown_mesh,
             )
 
             if self._is_aborted:

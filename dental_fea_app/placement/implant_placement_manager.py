@@ -583,7 +583,7 @@ class ImplantPlacementManager:
         imp = self.implants[implant_id]
         self.save_undo_state()
         imp.abutment = copy.deepcopy(spec)
-        abut_pd = generate_abutment_polydata(spec)
+        abut_pd = generate_abutment_polydata(spec, imp.spec)
         imp.raw_abutment_polydata = abut_pd
 
         mapper = vtk.vtkPolyDataMapper()
@@ -602,6 +602,14 @@ class ImplantPlacementManager:
         if self.renderer_3d is not None:
             self.renderer_3d.AddActor(actor)
         imp.abutment_actor = actor
+
+        # 이미 Crown이 장착되어 있으면 변경된 Abutment 상부 기둥에 맞춰 Crown 내부 홀 갱신
+        if imp.prosthetic:
+            imp.prosthetic.bottom_diameter_mm = float(spec.collar_top_diameter_mm)
+            p_pd = generate_prosthetic_polydata(imp.prosthetic, spec)
+            imp.raw_prosthetic_polydata = p_pd
+            if imp.prosthetic_actor:
+                imp.prosthetic_actor.GetMapper().SetInputData(p_pd)
 
         self._update_implant_transform(imp)
         self.update_2d_slice_contours(self.current_cursor)
@@ -638,7 +646,7 @@ class ImplantPlacementManager:
         imp = self.implants[implant_id]
         self.save_undo_state()
         imp.abutment = copy.deepcopy(new_spec)
-        abut_pd = generate_abutment_polydata(new_spec)
+        abut_pd = generate_abutment_polydata(new_spec, imp.spec)
         imp.raw_abutment_polydata = abut_pd
         if not imp.abutment_actor:
             mapper = vtk.vtkPolyDataMapper()
@@ -656,8 +664,8 @@ class ImplantPlacementManager:
         imp.abutment_actor.SetVisibility(self.is_visible_all and imp.is_visible)
 
         if imp.prosthetic:
-            imp.prosthetic.bottom_diameter_mm = max(1.5, new_spec.collar_top_diameter_mm - 1.0)
-            p_pd = generate_prosthetic_polydata(imp.prosthetic)
+            imp.prosthetic.bottom_diameter_mm = float(new_spec.collar_top_diameter_mm)
+            p_pd = generate_prosthetic_polydata(imp.prosthetic, new_spec)
             imp.raw_prosthetic_polydata = p_pd
             if imp.prosthetic_actor:
                 imp.prosthetic_actor.GetMapper().SetInputData(p_pd)
@@ -679,9 +687,9 @@ class ImplantPlacementManager:
             return False
         self.save_undo_state()
 
-        spec.bottom_diameter_mm = max(1.5, imp.abutment.collar_top_diameter_mm - 1.0)
+        spec.bottom_diameter_mm = float(imp.abutment.collar_top_diameter_mm)
         imp.prosthetic = copy.deepcopy(spec)
-        prost_pd = generate_prosthetic_polydata(spec)
+        prost_pd = generate_prosthetic_polydata(spec, imp.abutment)
         imp.raw_prosthetic_polydata = prost_pd
 
         mapper = vtk.vtkPolyDataMapper()
@@ -736,9 +744,9 @@ class ImplantPlacementManager:
             return False
         self.save_undo_state()
 
-        new_spec.bottom_diameter_mm = max(1.5, imp.abutment.collar_top_diameter_mm - 1.0)
+        new_spec.bottom_diameter_mm = float(imp.abutment.collar_top_diameter_mm)
         imp.prosthetic = copy.deepcopy(new_spec)
-        prost_pd = generate_prosthetic_polydata(new_spec)
+        prost_pd = generate_prosthetic_polydata(new_spec, imp.abutment)
         imp.raw_prosthetic_polydata = prost_pd
 
         if not imp.prosthetic_actor:
@@ -835,7 +843,7 @@ class ImplantPlacementManager:
     def get_transformed_abutment_polydata(self, imp: PlacedImplant) -> Optional[vtk.vtkPolyData]:
         if not imp.abutment:
             return None
-        poly = imp.raw_abutment_polydata or generate_abutment_polydata(imp.abutment)
+        poly = imp.raw_abutment_polydata or generate_abutment_polydata(imp.abutment, imp.spec)
         half_len = imp.spec.length_mm / 2.0
         tf = vtk.vtkTransform()
         tf.PostMultiply()
@@ -854,7 +862,7 @@ class ImplantPlacementManager:
     def get_transformed_prosthetic_polydata(self, imp: PlacedImplant) -> Optional[vtk.vtkPolyData]:
         if not imp.prosthetic or not imp.abutment:
             return None
-        poly = imp.raw_prosthetic_polydata or generate_prosthetic_polydata(imp.prosthetic)
+        poly = imp.raw_prosthetic_polydata or generate_prosthetic_polydata(imp.prosthetic, imp.abutment)
         half_len = imp.spec.length_mm / 2.0
         tf = vtk.vtkTransform()
         tf.PostMultiply()

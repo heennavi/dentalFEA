@@ -479,7 +479,7 @@ class ImplantSimulationDialog(QDialog):
 
         c_box = QHBoxLayout()
         c_box.addWidget(QLabel("색상:"))
-        self.rb_abut_gold = QRadioButton("Gold", abut_box)
+        self.rb_abut_gold = QRadioButton("Titanium(TiN3)", abut_box)
         self.rb_abut_gold.setChecked(True)
         self.rb_abut_zirconia = QRadioButton("Zirconia", abut_box)
         self.rb_abut_metal = QRadioButton("Metal", abut_box)
@@ -1079,7 +1079,7 @@ class ImplantSimulationDialog(QDialog):
         ang = float(self.slider_angulation.value())
         ang_dir = float(self.slider_ang_dir.value() * 5.0)
 
-        col_type = "gold"
+        col_type = "Titanium(TiN3)"
         col_rgb = (0.92, 0.75, 0.20)
         if self.rb_abut_zirconia.isChecked():
             col_type = "Zirconia"
@@ -1100,8 +1100,9 @@ class ImplantSimulationDialog(QDialog):
         )
 
     def _update_abutment_preview(self):
+        sel_imp = self.placement_mgr.get_selected_implant()
         spec = self._get_current_abutment_spec()
-        poly = generate_abutment_polydata(spec)
+        poly = generate_abutment_polydata(spec, sel_imp.spec if sel_imp else None)
         self.abutment_3d_view.set_polydata(poly, force_reset_camera=True)
         ar, ag, ab = spec.color_rgb
         self.abutment_3d_view.actor.GetProperty().SetColor(ar, ag, ab)

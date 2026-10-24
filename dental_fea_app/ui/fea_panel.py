@@ -94,16 +94,44 @@ class FeaPanel(QWidget):
         # 임플란트 주변 메쉬 크기
         row_near = QHBoxLayout()
         lbl_near = QLabel("임플란트 주변 (mm):", group_mesh)
-        lbl_near.setFixedWidth(122)
+        lbl_near.setFixedWidth(130)
         row_near.addWidget(lbl_near)
         self.spin_size_near = QDoubleSpinBox(group_mesh)
         self.spin_size_near.setRange(0.1, 5.0)
         self.spin_size_near.setValue(0.40)
         self.spin_size_near.setSingleStep(0.05)
-        self.spin_size_near.setFixedWidth(60)  # 기존 폭의 1/2로 축소
+        self.spin_size_near.setFixedWidth(60)
         row_near.addWidget(self.spin_size_near)
         row_near.addStretch()
         vbox_mesh.addLayout(row_near)
+
+        # 지대주(Abutment) 메쉬 크기
+        row_abut = QHBoxLayout()
+        lbl_abut = QLabel("지대주(Abutment) (mm):", group_mesh)
+        lbl_abut.setFixedWidth(130)
+        row_abut.addWidget(lbl_abut)
+        self.spin_size_abut = QDoubleSpinBox(group_mesh)
+        self.spin_size_abut.setRange(0.1, 5.0)
+        self.spin_size_abut.setValue(0.40)
+        self.spin_size_abut.setSingleStep(0.05)
+        self.spin_size_abut.setFixedWidth(60)
+        row_abut.addWidget(self.spin_size_abut)
+        row_abut.addStretch()
+        vbox_mesh.addLayout(row_abut)
+
+        # 보철물(Crown) 메쉬 크기
+        row_crown = QHBoxLayout()
+        lbl_crown = QLabel("보철물(Crown) (mm):", group_mesh)
+        lbl_crown.setFixedWidth(130)
+        row_crown.addWidget(lbl_crown)
+        self.spin_size_crown = QDoubleSpinBox(group_mesh)
+        self.spin_size_crown.setRange(0.1, 5.0)
+        self.spin_size_crown.setValue(0.40)
+        self.spin_size_crown.setSingleStep(0.05)
+        self.spin_size_crown.setFixedWidth(60)
+        row_crown.addWidget(self.spin_size_crown)
+        row_crown.addStretch()
+        vbox_mesh.addLayout(row_crown)
 
         # 3D 메싱 알고리즘 선택
         row_algo = QHBoxLayout()
@@ -510,6 +538,8 @@ class FeaPanel(QWidget):
             n_threads=self.spin_threads.value(),
             mesh_algorithm_3d=self.combo_mesh_algo.currentData(),
             optimize_netgen=self.chk_optimize_netgen.isChecked(),
+            mesh_size_abutment_mm=self.spin_size_abut.value(),
+            mesh_size_crown_mm=self.spin_size_crown.value(),
         )
         self.btn_mesh.setEnabled(False)
         self.mesh_progress_bar.setVisible(True)

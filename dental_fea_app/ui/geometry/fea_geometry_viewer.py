@@ -144,8 +144,7 @@ class FeaGeometryViewWidget(QWidget):
         self.marker_widget.SetOrientationMarker(axes)
         self.marker_widget.SetInteractor(self.vtkWidget._Iren)
         self.marker_widget.SetViewport(0.0, 0.0, 0.22, 0.22)
-        self.marker_widget.SetEnabled(1)
-        self.marker_widget.InteractiveOff()
+        self._marker_widget_enabled = False
 
         # 5. FEA 액터 및 클리핑 평면 초기화
         self._init_actors()
@@ -168,8 +167,20 @@ class FeaGeometryViewWidget(QWidget):
         if mesh_model is not None:
             self._on_mesh_model_changed(mesh_model)
 
-        self.vtkWidget.Initialize()
-        self.vtkWidget.Start()
+    def showEvent(self, event):
+        super().showEvent(event)
+        try:
+            self.vtkWidget.Initialize()
+            self.vtkWidget.Start()
+        except Exception:
+            pass
+        if not getattr(self, "_marker_widget_enabled", False):
+            try:
+                self.marker_widget.SetEnabled(1)
+                self.marker_widget.InteractiveOff()
+                self._marker_widget_enabled = True
+            except Exception:
+                pass
 
 
     def _init_actors(self):
@@ -200,16 +211,38 @@ class FeaGeometryViewWidget(QWidget):
         self.cancellous_actor.SetVisibility(False)
         self.renderer.AddActor(self.cancellous_actor)
 
-        # 3. 임플란트 솔리드 (골드/티타늄)
+        # 3. 임플란트 솔리드 (티타늄)
         self.implant_mapper = vtk.vtkPolyDataMapper()
         self.implant_actor = vtk.vtkActor()
         self.implant_actor.SetMapper(self.implant_mapper)
-        self.implant_actor.GetProperty().SetColor(0.90, 0.75, 0.40)
+        self.implant_actor.GetProperty().SetColor(0.80, 0.65, 0.35)
         self.implant_actor.GetProperty().SetOpacity(1.0)
         self.implant_actor.GetProperty().SetSpecular(0.6)
         self.implant_actor.GetProperty().SetSpecularPower(40.0)
         self.implant_actor.SetVisibility(False)
         self.renderer.AddActor(self.implant_actor)
+
+        # 3-1. 지대주(Abutment) 솔리드 (티타늄/골드)
+        self.abutment_mapper = vtk.vtkPolyDataMapper()
+        self.abutment_actor = vtk.vtkActor()
+        self.abutment_actor.SetMapper(self.abutment_mapper)
+        self.abutment_actor.GetProperty().SetColor(0.88, 0.75, 0.25)
+        self.abutment_actor.GetProperty().SetOpacity(1.0)
+        self.abutment_actor.GetProperty().SetSpecular(0.6)
+        self.abutment_actor.GetProperty().SetSpecularPower(40.0)
+        self.abutment_actor.SetVisibility(False)
+        self.renderer.AddActor(self.abutment_actor)
+
+        # 3-2. 보철물(Crown) 솔리드 (지르코니아/골드)
+        self.crown_mapper = vtk.vtkPolyDataMapper()
+        self.crown_actor = vtk.vtkActor()
+        self.crown_actor.SetMapper(self.crown_mapper)
+        self.crown_actor.GetProperty().SetColor(0.93, 0.90, 0.82)
+        self.crown_actor.GetProperty().SetOpacity(1.0)
+        self.crown_actor.GetProperty().SetSpecular(0.5)
+        self.crown_actor.GetProperty().SetSpecularPower(30.0)
+        self.crown_actor.SetVisibility(False)
+        self.renderer.AddActor(self.crown_actor)
 
         # 4. 체적 메쉬 표면 액터 및 경계조건 글리프 액터
         self.mesh_actors = {}
@@ -230,6 +263,8 @@ class FeaGeometryViewWidget(QWidget):
             self.cortical_actor.SetVisibility(False)
             self.cancellous_actor.SetVisibility(False)
             self.implant_actor.SetVisibility(False)
+            self.abutment_actor.SetVisibility(False)
+            self.crown_actor.SetVisibility(False)
             self.stack.setCurrentWidget(self.lbl_placeholder)
             self.render()
             return
@@ -244,8 +279,24 @@ class FeaGeometryViewWidget(QWidget):
         self.cancellous_mapper.SetInputData(poly_cn)
         self.implant_mapper.SetInputData(poly_i)
 
+        all_polys = [poly_c, poly_cn, poly_i]
+
+        if fea_geom.abutment is not None and len(fea_geom.abutment.faces) > 0:
+            poly_a = trimesh_to_vtk_polydata(fea_geom.abutment)
+            self.abutment_mapper.SetInputData(poly_a)
+            all_polys.append(poly_a)
+        else:
+            self.abutment_mapper.SetInputData(vtk.vtkPolyData())
+
+        if fea_geom.crown is not None and len(fea_geom.crown.faces) > 0:
+            poly_cr = trimesh_to_vtk_polydata(fea_geom.crown)
+            self.crown_mapper.SetInputData(poly_cr)
+            all_polys.append(poly_cr)
+        else:
+            self.crown_mapper.SetInputData(vtk.vtkPolyData())
+
         all_bounds = []
-        for poly in [poly_c, poly_cn, poly_i]:
+        for poly in all_polys:
             if poly.GetNumberOfPoints() > 0:
                 all_bounds.append(poly.GetBounds())
         if all_bounds:
@@ -270,6 +321,8 @@ class FeaGeometryViewWidget(QWidget):
             self.cortical_actor.SetVisibility(False)
             self.cancellous_actor.SetVisibility(False)
             self.implant_actor.SetVisibility(False)
+            self.abutment_actor.SetVisibility(False)
+            self.crown_actor.SetVisibility(False)
             return
 
         vis = self.state_mgr.fea_visibility
@@ -284,16 +337,24 @@ class FeaGeometryViewWidget(QWidget):
         self.implant_actor.SetVisibility(bool(vis.get("implant", True)))
         self.implant_actor.GetProperty().SetOpacity(1.0)
 
+        has_abut = (geom.abutment is not None and len(geom.abutment.faces) > 0)
+        self.abutment_actor.SetVisibility(bool(vis.get("abutment", True)) and has_abut)
+        self.abutment_actor.GetProperty().SetOpacity(1.0)
+
+        has_crown = (geom.crown is not None and len(geom.crown.faces) > 0)
+        self.crown_actor.SetVisibility(bool(vis.get("crown", True)) and has_crown)
+        self.crown_actor.GetProperty().SetOpacity(1.0)
+
     def _on_fea_clipping_changed(self, clip: dict):
         self._apply_fea_clipping()
         self.render()
 
     def _apply_fea_clipping(self):
         clip = getattr(self.state_mgr, "fea_clipping", None)
+        mappers = [self.cortical_mapper, self.cancellous_mapper, self.implant_mapper, self.abutment_mapper, self.crown_mapper]
         if clip is None or not clip.get("enabled", False):
-            self.cortical_mapper.RemoveAllClippingPlanes()
-            self.cancellous_mapper.RemoveAllClippingPlanes()
-            self.implant_mapper.RemoveAllClippingPlanes()
+            for mapper in mappers:
+                mapper.RemoveAllClippingPlanes()
             self.render()
             return
 
@@ -327,7 +388,7 @@ class FeaGeometryViewWidget(QWidget):
         self.fea_clip_plane.SetOrigin(origin[0], origin[1], origin[2])
         self.fea_clip_plane.SetNormal(normal[0], normal[1], normal[2])
 
-        for mapper in [self.cortical_mapper, self.cancellous_mapper, self.implant_mapper]:
+        for mapper in mappers:
             mapper.RemoveAllClippingPlanes()
             mapper.AddClippingPlane(self.fea_clip_plane)
 
@@ -359,6 +420,8 @@ class FeaGeometryViewWidget(QWidget):
         self.render()
 
     def render(self):
+        if not self.isVisible():
+            return
         rw = self.vtkWidget.GetRenderWindow()
         if rw:
             rw.Render()
@@ -619,46 +682,70 @@ class FeaGeometryViewWidget(QWidget):
         self.set_load_gizmo_visible(True)
 
     def _get_target_nodes(self) -> Optional[np.ndarray]:
-        """임플란트 파트의 절점 좌표 반환 (없으면 골 최상단)"""
+        """교합 하중 대상 파트의 절점 좌표 반환 (Crown -> Abutment -> Implant -> Bone 순서)"""
         mesh_model = getattr(self.state_mgr, "mesh_model", None)
         if mesh_model is not None:
-            part = mesh_model.get_part("implant") or mesh_model.get_part("bone")
+            part = (
+                mesh_model.get_part("crown") or
+                mesh_model.get_part("prosthesis") or
+                mesh_model.get_part("abutment") or
+                mesh_model.get_part("implant") or
+                mesh_model.get_part("bone")
+            )
             if part is not None:
                 return part.nodes
         geom = getattr(self.state_mgr, "fea_geometry", None)
-        if geom is not None and geom.implant is not None:
-            return np.array(geom.implant.vertices, dtype=np.float64)
+        if geom is not None:
+            if geom.crown is not None and len(getattr(geom.crown, "vertices", [])) > 0:
+                return np.array(geom.crown.vertices, dtype=np.float64)
+            if geom.abutment is not None and len(getattr(geom.abutment, "vertices", [])) > 0:
+                return np.array(geom.abutment.vertices, dtype=np.float64)
+            if geom.implant is not None and len(getattr(geom.implant, "vertices", [])) > 0:
+                return np.array(geom.implant.vertices, dtype=np.float64)
         return None
 
     def _get_implant_top_position(self) -> Optional[np.ndarray]:
-        """식립된 첫 번째 임플란트의 상단 플랫폼 중심점 (World LPS mm) 반환"""
-        if hasattr(self.state_mgr, "implant_placement_mgr") and self.state_mgr.implant_placement_mgr.implants:
-            imp = next(iter(self.state_mgr.implant_placement_mgr.implants.values()))
-            half_len = imp.spec.length_mm / 2.0
-            tf = vtk.vtkTransform()
-            tf.PostMultiply()
-            tf.Translate(0.0, 0.0, -half_len)
-            tf.RotateZ(imp.orientation[0])
-            tf.RotateX(imp.orientation[1])
-            tf.RotateY(imp.orientation[2])
-            tf.Translate(imp.position[0], imp.position[1], imp.position[2])
+        """
+        교합 하중 작용점(화살표 팁) 위치 반환 (World LPS mm).
+        - Crown이 있으면: Crown 최상단면 정점
+        - Abutment만 있으면: Abutment 최상단면 정점
+        - Implant만 있으면: Implant 플랫폼 최상단 정점
+        """
+        from vtk.util import numpy_support
+        ref_axis = self._get_implant_axis()  # 상부 -> 하부 방향 단위 벡터
+        up_dir = -ref_axis  # 하부 -> 상부 (치관 방향)
 
+        # 1. 기하 생성 결과물(FeaGeometry)이 있는 경우 실제 3D 솔리드 메쉬 정점에서 최상단 추출
+        geom = getattr(self.state_mgr, "fea_geometry", None)
+        if geom is not None:
+            for m in [geom.crown, geom.abutment, geom.implant]:
+                if m is not None and len(getattr(m, "vertices", [])) > 0:
+                    pts = np.array(m.vertices, dtype=np.float64)
+                    projs = np.dot(pts, up_dir)
+                    return np.copy(pts[np.argmax(projs)])
+
+        # 2. 식립 관리자(ImplantPlacementManager)가 있는 경우 변환된 PolyData에서 최상단 추출
+        mgr = getattr(self.state_mgr, "implant_placement_mgr", None)
+        if mgr and mgr.implants:
+            imp = next(iter(mgr.implants.values()))
+            target_pd = None
             if imp.prosthetic and imp.abutment:
-                total_h = imp.spec.length_mm + imp.abutment.collar_height_mm + imp.prosthetic.length_mm
-                top_pt = tf.TransformPoint(0.0, 0.0, total_h)
-                return np.array(top_pt, dtype=np.float64)
-            elif imp.abutment:
-                total_h = imp.spec.length_mm + imp.abutment.collar_height_mm
-                top_pt = tf.TransformPoint(0.0, 0.0, total_h)
-                return np.array(top_pt, dtype=np.float64)
-            else:
-                top_pt = tf.TransformPoint(0.0, 0.0, imp.spec.length_mm)
-                return np.array(top_pt, dtype=np.float64)
+                target_pd = mgr.get_transformed_prosthetic_polydata(imp)
+            if target_pd is None and imp.abutment:
+                target_pd = mgr.get_transformed_abutment_polydata(imp)
+            if target_pd is None:
+                target_pd = mgr.get_transformed_polydata(imp)
 
+            if target_pd is not None and target_pd.GetNumberOfPoints() > 0:
+                pts = numpy_support.vtk_to_numpy(target_pd.GetPoints().GetData())
+                projs = np.dot(pts, up_dir)
+                return np.copy(pts[np.argmax(projs)])
+
+        # 3. 폴백: 타깃 절점 중 Z 최상단 좌표 반환
         nodes = self._get_target_nodes()
         if nodes is not None and len(nodes) > 0:
-            max_idx = int(np.argmax(nodes[:, 2]))
-            return np.copy(nodes[max_idx])
+            projs = np.dot(nodes, up_dir)
+            return np.copy(nodes[np.argmax(projs)])
         return None
 
     def _get_implant_axis(self) -> np.ndarray:
