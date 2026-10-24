@@ -169,6 +169,16 @@ def attach_results(
             vtk_smin.SetName("s_min_principal")
             point_data.AddArray(vtk_smin)
 
+    if rs.strain6 is not None:
+        from postprocess.result_fields import equivalent_strain
+        eq_strain = equivalent_strain(rs.strain6[part_slice])
+        # 변형률 무차원 -> UI/VTK 표시용 microstrain (µε = strain * 1e6) 변환
+        eq_strain_ue = np.ascontiguousarray(eq_strain * 1e6, dtype=np.float64)
+        if len(eq_strain_ue) == n_nodes:
+            vtk_strain = numpy_support.numpy_to_vtk(eq_strain_ue, deep=True)
+            vtk_strain.SetName("equiv_strain")
+            point_data.AddArray(vtk_strain)
+
     # 2. 요소 데이터(Cell Data) 부착 - E_MPa
     if material_assignment is not None and part_name in material_assignment.element_material:
         elem_mat_indices = material_assignment.element_material[part_name]

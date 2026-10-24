@@ -19,6 +19,8 @@ from dental_fea_app.ui.segmentation.segmentation_panel import SegmentationPanel
 from dental_fea_app.ui.placement.implant_panel import ImplantPanel
 from dental_fea_app.ui.geometry.geometry_panel import GeometryPanel
 from dental_fea_app.ui.fea_panel import FeaPanel
+from ui.result_panel import ResultPanel
+from ui.result_controller import ResultController
 import math
 
 
@@ -31,8 +33,7 @@ class ControlPanel(QWidget):
     def __init__(self, state_manager: StateManager, on_open_3d_viewer: Callable[[], None], parent: Optional[QWidget] = None):
         super().__init__(parent)
         self.state_mgr = state_manager
-        self.on_open_3d_viewer = on_open_3d_viewer
-        self.setMinimumWidth(240)
+        self.setMinimumWidth(276)  # 기존 240px에서 15% 확대
         self.setMaximumWidth(600)
 
         main_layout = QVBoxLayout(self)
@@ -211,13 +212,13 @@ class ControlPanel(QWidget):
         t1_layout.addStretch()
         tabs.addTab(t1, "1. 영상")
 
-        # 탭 2: Phase 2 분할 (피질골/수질골 분할 패널)
-        self.segmentation_panel = SegmentationPanel(self.state_mgr, self)
-        tabs.addTab(self.segmentation_panel, "2. 분할")
-
-        # 탭 3: Phase 2 임플란트 배치 패널
+        # 탭 2: Phase 2 임플란트 배치 패널
         self.implant_panel = ImplantPanel(self.state_mgr, self)
-        tabs.addTab(self.implant_panel, "3. 임플란트")
+        tabs.addTab(self.implant_panel, "2. 임플란트")
+
+        # 탭 3: Phase 2 분할 (피질골/수질골 분할 패널)
+        self.segmentation_panel = SegmentationPanel(self.state_mgr, self)
+        tabs.addTab(self.segmentation_panel, "3. 분할")
 
         # 탭 4: Phase 2 기하 처리 패널 (Boolean 차집합 및 메쉬 준비)
         self.geometry_panel = GeometryPanel(self.state_mgr, self)
@@ -227,14 +228,33 @@ class ControlPanel(QWidget):
         self.fea_panel = FeaPanel(self.state_mgr, self)
         tabs.addTab(self.fea_panel, "5. 해석")
 
+        # 탭 6: Phase 4 FEA 해석 결과 패널
+        self.result_panel = ResultPanel(self.state_mgr, self)
+        self.result_controller = ResultController(self.state_mgr, panel=self.result_panel, parent=self)
+        self.result_panel.controller = self.result_controller
+        tabs.addTab(self.result_panel, "6. 결과")
 
-        # CT 이미지가 열리기 전에는 분할(1), 임플란트(2), 기하 처리(3), 해석(4) 비활성화
+        # 결과 로드/무효화 시 탭 활성화 및 전환 연결
+        self.result_controller.results_loaded.connect(self._on_results_loaded)
+        self.result_controller.results_cleared.connect(self._on_results_cleared)
+
+        tabs.currentChanged.connect(self._on_workflow_tab_changed)
+
+        # CT 이미지가 열리기 전에는 분할(1), 임플란트(2), 기하 처리(3), 해석(4), 결과(5) 비활성화
         tabs.setTabEnabled(1, False)
         tabs.setTabEnabled(2, False)
         tabs.setTabEnabled(3, False)
         tabs.setTabEnabled(4, False)
+        tabs.setTabEnabled(5, False)
 
         return tabs
+
+    def _on_workflow_tab_changed(self, index: int):
+        """워크플로 탭 전환 시 3D 볼륨 창의 결과 뷰 모드 및 임플란트 기즈모 복구 연동"""
+        is_result_tab = (index == 5)
+        mw = self.window()
+        if mw is not None and hasattr(mw, "volume_window") and mw.volume_window is not None:
+            mw.volume_window.set_result_view_mode(is_result_tab)
 
     # --- 이벤트 핸들러 ---
     def _load_dicom_folder(self):
@@ -284,6 +304,15 @@ class ControlPanel(QWidget):
         except Exception as e:
             QMessageBox.critical(self, "샘플 로드 오류", f"샘플 데이터를 로드하는 중 오류가 발생했습니다:\n{str(e)}")
 
+    def _on_results_loaded(self, rs, stats):
+        if hasattr(self, "workflow_tabs"):
+            self.workflow_tabs.setTabEnabled(5, True)
+            self.workflow_tabs.setCurrentIndex(5)
+
+    def _on_results_cleared(self):
+        if hasattr(self, "workflow_tabs"):
+            self.workflow_tabs.setTabEnabled(5, False)
+
     def _on_volume_loaded(self, vtk_image):
         has_vol = (vtk_image is not None)
         if hasattr(self, "workflow_tabs"):
@@ -291,6 +320,7 @@ class ControlPanel(QWidget):
             self.workflow_tabs.setTabEnabled(2, has_vol)
             self.workflow_tabs.setTabEnabled(3, has_vol)
             self.workflow_tabs.setTabEnabled(4, has_vol)
+            self.workflow_tabs.setTabEnabled(5, False)
 
         if hasattr(self, "lbl_meta_dim"):
             dims = self.state_mgr.dimensions

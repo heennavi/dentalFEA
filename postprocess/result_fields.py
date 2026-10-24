@@ -109,6 +109,39 @@ def von_mises(stress6: np.ndarray) -> np.ndarray:
     return np.sqrt(vm_sq)
 
 
+def equivalent_strain(strain6: np.ndarray) -> np.ndarray:
+    """
+    Calculate von Mises equivalent strain from tensor strain 6-components.
+
+    Formula (tensor shear strain components exy, eyz, ezx):
+        (sqrt(2) / 3) * sqrt((exx-eyy)^2 + (eyy-ezz)^2 + (ezz-exx)^2 + 6 * (exy^2 + eyz^2 + ezx^2))
+
+    Args:
+        strain6: (N, 6) float array ordered as [EXX, EYY, EZZ, EXY, EYZ, EZX] (dimensionless).
+
+    Returns:
+        np.ndarray: (N,) float64 array of equivalent strain (dimensionless).
+    """
+    strain6 = np.asarray(strain6, dtype=np.float64)
+    if strain6.ndim == 1:
+        strain6 = strain6.reshape(1, -1)
+
+    exx = strain6[:, 0]
+    eyy = strain6[:, 1]
+    ezz = strain6[:, 2]
+    exy = strain6[:, 3]
+    eyz = strain6[:, 4]
+    ezx = strain6[:, 5]
+
+    diff_sq = (exx - eyy) ** 2 + (eyy - ezz) ** 2 + (ezz - exx) ** 2
+    shear_sq = exy ** 2 + eyz ** 2 + ezx ** 2
+    eq_sq = diff_sq + 6.0 * shear_sq
+
+    eq_sq = np.maximum(eq_sq, 0.0)
+    eq = (np.sqrt(2.0) / 3.0) * np.sqrt(eq_sq)
+    return eq
+
+
 def build_result_set(
     frd: FrdData,
     model: MeshModel,
@@ -130,7 +163,7 @@ def build_result_set(
         ResultSet: Standardized result fields aligned to MeshModel global 0-based node indices.
 
     Raises:
-        ValueError: If node counts differ or undeformed coordinates mismatch (> 1e-4 mm).
+        ValueError: If node counts differ or undeformed coordinates mismatch (> 1.5e-3 mm).
     """
     # 1. Phase 3 GlobalIndexMapper 재사용
     mapper = GlobalIndexMapper(model)
@@ -149,7 +182,7 @@ def build_result_set(
             f"메쉬 모델의 절점 수({total_nodes})가 일치하지 않습니다."
         )
 
-    # 3. 비변형 좌표 일치 검증 (허용 오차 1e-4 mm)
+    # 3. 비변형 좌표 일치 검증 (허용 오차 1.5e-3 mm: CalculiX ASCII 12.5f 출력 반올림 오차 수용)
     # frd.node_ids는 1-based 전역 번호이므로 전역 0-based 인덱스는 node_ids - 1
     frd_global_0based = frd.node_ids - 1
     if np.any(frd_global_0based < 0) or np.any(frd_global_0based >= total_nodes):
@@ -157,10 +190,10 @@ def build_result_set(
 
     coord_diff = np.abs(frd.node_coords - model_coords[frd_global_0based])
     max_coord_diff = float(np.max(coord_diff)) if len(coord_diff) > 0 else 0.0
-    if max_coord_diff > 1e-4:
+    if max_coord_diff > 1.5e-3:
         raise ValueError(
             f"CalculiX 결과 파일(.frd)의 절점 좌표가 메쉬 모델과 일치하지 않습니다 "
-            f"(최대 오차: {max_coord_diff:.6f} mm > 허용 오차 1e-4 mm)."
+            f"(최대 오차: {max_coord_diff:.6f} mm > 허용 오차 1.5e-3 mm)."
         )
 
     sim_time = 0.0

@@ -113,7 +113,7 @@ class ResultProbe(QObject):
             self._press_ctrl = bool(caller.GetControlKey())
 
     def _on_left_button_release(self, caller: Any, event: str) -> None:
-        """Evaluate click displacement; trigger probing if displacement <= 3 pixels."""
+        """Evaluate click displacement; trigger probing if displacement <= 6 pixels."""
         if caller is None or not hasattr(caller, "GetEventPosition"):
             return
 
@@ -122,8 +122,8 @@ class ResultProbe(QObject):
         dy = rel_pos[1] - self._press_pos[1]
         dist = (dx * dx + dy * dy) ** 0.5
 
-        # 드래그 거리 3px 이하이고 (프로브 모드 ON 또는 Ctrl 키 눌림) 상태일 때 실행
-        if dist <= 3.0 and (self._probe_enabled or self._press_ctrl):
+        # 드래그 거리 6px 이하이고 (프로브 모드 ON 또는 Ctrl 키 눌림) 상태일 때 실행
+        if dist <= 6.0 and (self._probe_enabled or self._press_ctrl):
             self._perform_pick(rel_pos[0], rel_pos[1])
 
     def _perform_pick(self, x: int, y: int) -> None:
@@ -131,12 +131,28 @@ class ResultProbe(QObject):
         if self._renderer is None or self._controller is None:
             return
 
-        picker = vtk.vtkPointPicker()
-        picker.SetTolerance(0.01)
-        pick_success = picker.Pick(float(x), float(y), 0.0, self._renderer)
+        # 1. 메쉬 표면(Cell) 레이캐스팅 피킹 (삼각형 면 위 클릭 감지)
+        cell_picker = vtk.vtkCellPicker()
+        cell_picker.SetTolerance(0.005)
+        pick_success = bool(cell_picker.Pick(float(x), float(y), 0.0, self._renderer))
+        pick_pos = cell_picker.GetPickPosition() if pick_success else None
 
-        if pick_success:
-            pick_pos = picker.GetPickPosition()
+        # 2. CellPicker 실패 시 PointPicker fallback
+        if not pick_success:
+            point_picker = vtk.vtkPointPicker()
+            point_picker.SetTolerance(0.02)
+            if point_picker.Pick(float(x), float(y), 0.0, self._renderer):
+                pick_pos = point_picker.GetPickPosition()
+                pick_success = True
+
+        # 3. PropPicker fallback
+        if not pick_success:
+            prop_picker = vtk.vtkPropPicker()
+            if prop_picker.Pick(float(x), float(y), 0.0, self._renderer):
+                pick_pos = prop_picker.GetPickPosition()
+                pick_success = True
+
+        if pick_success and pick_pos is not None:
             probe_data = self.find_nearest_node(pick_pos)
             if probe_data is not None:
                 self._update_probe_marker(probe_data)
@@ -435,6 +451,15 @@ class ResultProbe(QObject):
             self._controller._render()
 
         return max_info
+
+    def mark_max_stress(
+        self,
+        field: str = "von_mises",
+        part_name: Optional[str] = None,
+        focus_camera: bool = False,
+    ) -> Optional[dict]:
+        """Alias for mark_maximum for compatibility with ResultController."""
+        return self.mark_maximum(field=field, part_name=part_name, focus_camera=focus_camera)
 
     def clear_markers(self) -> None:
         """Remove all probe and maximum markers and labels from the renderer."""

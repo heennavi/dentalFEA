@@ -438,3 +438,108 @@ def max_stress_location(
             "value": best_val,
             "field": field,
         }
+
+
+def peri_implant_stats(
+    rs: ResultSet,
+    model: MeshModel,
+    radius_mm: float = 1.0,
+    materials: Optional[MaterialAssignment] = None,
+    ties: Optional[Sequence[TieDef]] = None,
+    bone_part_name: Optional[str] = None,
+) -> dict:
+    """
+    Convenience wrapper to compute peri-implant bone stress statistics.
+
+    Automatically resolves bone interface nodes from TieDef constraints if provided,
+    or identifies contact boundary nodes via proximity search between implant and bone parts.
+
+    Args:
+        rs: Computed ResultSet.
+        model: MeshModel containing assembly parts.
+        radius_mm: Distance from interface to analyze (mm).
+        materials: Optional MaterialAssignment for cortical/cancellous stratification.
+        ties: Optional list of TieDef constraints.
+        bone_part_name: Optional bone part name override.
+
+    Returns:
+        dict: Summary statistics including node count and stress percentiles.
+    """
+    if not model.parts:
+        return {
+            "num_nodes": 0,
+            "radius_mm": float(radius_mm),
+            "max_von_mises": None,
+            "mean_von_mises": None,
+            "p95_von_mises": None,
+            "p99_von_mises": None,
+            "max_s_max_principal": None,
+            "min_s_min_principal": None,
+        }
+
+    # 1. 뼈 파트 식별
+    target_bone = None
+    if bone_part_name is not None:
+        target_bone = model.get_part(bone_part_name)
+    if target_bone is None:
+        for p in model.parts:
+            if "bone" in p.name.lower() or "mandible" in p.name.lower():
+                target_bone = p
+                break
+    if target_bone is None:
+        target_bone = model.parts[0]
+
+    # 2. 임플란트 파트 식별
+    target_implant = None
+    for p in model.parts:
+        if p.name != target_bone.name and ("implant" in p.name.lower() or "fixture" in p.name.lower()):
+            target_implant = p
+            break
+    if target_implant is None and len(model.parts) > 1:
+        for p in model.parts:
+            if p.name != target_bone.name:
+                target_implant = p
+                break
+
+    if target_implant is None:
+        # 단일 파트인 경우 인터페이스가 없으므로 빈 통계 반환
+        return {
+            "num_nodes": 0,
+            "radius_mm": float(radius_mm),
+            "max_von_mises": None,
+            "mean_von_mises": None,
+            "p95_von_mises": None,
+            "p99_von_mises": None,
+            "max_s_max_principal": None,
+            "min_s_min_principal": None,
+        }
+
+    # 3. 접촉면 절점 추출
+    iface_nodes = np.array([], dtype=np.int64)
+    if ties:
+        for tie in ties:
+            sub_iface = extract_bone_interface_nodes(tie, model, bone_part_name=target_bone.name)
+            if len(sub_iface) > 0:
+                iface_nodes = np.union1d(iface_nodes, sub_iface)
+
+    if len(iface_nodes) == 0:
+        # 최근접 기하 거리 기반 인터페이스 추정
+        tree_bone = cKDTree(target_bone.nodes)
+        distances, nearest_idx = tree_bone.query(target_implant.nodes, k=1)
+        min_d = np.min(distances) if len(distances) > 0 else 0.0
+        # 최근접 거리 + 0.5mm 이내의 절점들을 인터페이스로 채택
+        threshold = max(min_d + 0.5, 0.5)
+        contact_mask = distances <= threshold
+        if np.any(contact_mask):
+            iface_nodes = np.unique(nearest_idx[contact_mask].astype(np.int64))
+        elif len(nearest_idx) > 0:
+            iface_nodes = np.unique(nearest_idx.astype(np.int64))
+
+    return peri_implant_bone_stats(
+        rs=rs,
+        model=model,
+        interface_nodes_bone=iface_nodes,
+        radius_mm=radius_mm,
+        materials=materials,
+        bone_part_name=target_bone.name,
+    )

@@ -289,4 +289,28 @@ class TestGmshMesher:
             assert part.element_type == "C3D4"
             assert len(part.elements) > 0
 
+    def test_refined_mesh_size_03_estimation(self, cube_10mm):
+        """Verify that size_near=0.3mm with refine_surface does not falsely exceed max_elements."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            bone_stl = os.path.join(tmpdir, "bone.stl")
+            cube_10mm.export(bone_stl)
+
+            implant = trimesh.creation.cylinder(radius=1.5, height=5.0)
+            implant_stl = os.path.join(tmpdir, "implant.stl")
+            implant.export(implant_stl)
+
+            # size_near=0.3mm, size_far=2.0mm
+            nodes, elems = mesh_closed_surface(
+                stl_path=bone_stl,
+                size_far=2.0,
+                size_near=0.3,
+                refine_surface_stl=implant_stl,
+                element_order=1,
+                max_elements=3_000_000,
+            )
+            assert len(nodes) > 0
+            assert len(elems) > 0
+            assert elems.shape[1] == 4
+
+
 

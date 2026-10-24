@@ -98,8 +98,8 @@ class FeaPanel(QWidget):
         row_near.addWidget(lbl_near)
         self.spin_size_near = QDoubleSpinBox(group_mesh)
         self.spin_size_near.setRange(0.1, 5.0)
-        self.spin_size_near.setValue(0.5)
-        self.spin_size_near.setSingleStep(0.1)
+        self.spin_size_near.setValue(0.40)
+        self.spin_size_near.setSingleStep(0.05)
         self.spin_size_near.setFixedWidth(60)  # 기존 폭의 1/2로 축소
         row_near.addWidget(self.spin_size_near)
         row_near.addStretch()
@@ -323,7 +323,7 @@ class FeaPanel(QWidget):
         row_threads.addWidget(QLabel("스레드 수:", group_solver))
         self.spin_threads = QSpinBox(group_solver)
         self.spin_threads.setRange(1, 64)
-        self.spin_threads.setValue(4)
+        self.spin_threads.setValue(8)
         row_threads.addWidget(self.spin_threads)
         vbox_solver.addLayout(row_threads)
 

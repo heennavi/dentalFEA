@@ -28,7 +28,7 @@ class CalculixRunner(QObject):
     finished = Signal(bool, str, str)
     error = Signal(str)
 
-    def __init__(self, ccx_path: Optional[str] = None, n_threads: int = 4, parent: Optional[QObject] = None):
+    def __init__(self, ccx_path: Optional[str] = None, n_threads: int = 8, parent: Optional[QObject] = None):
         """
         Initialize CalculixRunner.
 

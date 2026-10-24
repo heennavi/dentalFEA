@@ -129,6 +129,8 @@ class VolumeViewerWindow(QMainWindow):
         self._render_timer.setInterval(60)  # 최대 약 16 FPS로 3D 렌더 제한
         self._render_timer.timeout.connect(self._do_render)
 
+        self.is_result_view_mode: bool = False
+
         # 볼륨 렌더링 파이프라인
         self.volume_mapper = vtk.vtkSmartVolumeMapper()
         self.volume_mapper.SetRequestedRenderModeToGPU()
@@ -934,6 +936,12 @@ class VolumeViewerWindow(QMainWindow):
         self.chk_show_crosslines.toggled.connect(self._on_show_crosslines_toggled)
         opt_layout.addWidget(self.chk_show_crosslines)
 
+        self.chk_implant_selectable = QCheckBox("임플란트 선택 가능", opt_group)
+        self.chk_implant_selectable.setChecked(True)
+        self.chk_implant_selectable.setToolTip("3D 창에서 임플란트를 마우스로 클릭하여 선택 및 조작할 수 있도록 허용합니다.")
+        self.chk_implant_selectable.toggled.connect(self._on_implant_selectable_toggled)
+        opt_layout.addWidget(self.chk_implant_selectable)
+
         layout.addWidget(opt_group)
         layout.addStretch()
 
@@ -954,6 +962,40 @@ class VolumeViewerWindow(QMainWindow):
             if checked:
                 self._update_position_indicators(*self.state_mgr.current_coords)
             self.render()
+
+    def _on_implant_selectable_toggled(self, checked: bool):
+        """임플란트 선택 가능/불가능 토글 슬롯"""
+        if not checked:
+            if hasattr(self, "implant_gizmo_3d") and self.implant_gizmo_3d.is_attached:
+                self.implant_gizmo_3d.detach()
+                self.render()
+        else:
+            sel_imp = self.state_mgr.implant_placement_mgr.get_selected_implant()
+            if sel_imp and hasattr(self, "implant_gizmo_3d") and not getattr(self, "is_result_view_mode", False):
+                self.implant_gizmo_3d.attach_to_implant(sel_imp.id)
+                self.render()
+
+    def set_result_view_mode(self, enabled: bool):
+        """
+        해석 결과 3D 뷰 모드 설정.
+        enabled=True: 임플란트 선택 체크박스를 해제하고 기즈모를 숨김.
+        enabled=False: 원래 상태로 복구(임플란트 선택 체크박스를 다시 체크하고 기즈모 복구).
+        """
+        self.is_result_view_mode = enabled
+        if hasattr(self, "chk_implant_selectable"):
+            self.chk_implant_selectable.blockSignals(True)
+            self.chk_implant_selectable.setChecked(not enabled)
+            self.chk_implant_selectable.blockSignals(False)
+
+        if enabled:
+            if hasattr(self, "implant_gizmo_3d") and self.implant_gizmo_3d.is_attached:
+                self.implant_gizmo_3d.detach()
+                self.render()
+        else:
+            sel_imp = self.state_mgr.implant_placement_mgr.get_selected_implant()
+            if sel_imp and hasattr(self, "implant_gizmo_3d"):
+                self.implant_gizmo_3d.attach_to_implant(sel_imp.id)
+                self.render()
 
 
     def _toggle_settings_panel(self, checked: bool):
@@ -1029,9 +1071,12 @@ class VolumeViewerWindow(QMainWindow):
     def _on_roi_bounds_updated(self, bounds):
         """2D 뷰 또는 3D 위젯에서 사각형이 조절되어 새로운 바운더리가 설정되었을 때 호출"""
         if bounds is not None:
-            self.roi_box_source.SetBounds(bounds)
-            if not self._box_widget_updating and not self.box_widget.GetEnabled():
+            if hasattr(self, "roi_box_source"):
+                self.roi_box_source.SetBounds(bounds)
+            if hasattr(self, "box_widget") and not self._box_widget_updating:
                 try:
+                    t_identity = vtk.vtkTransform()
+                    self.box_widget.SetTransform(t_identity)
                     self.box_widget.PlaceWidget(bounds)
                 except Exception:
                     pass
@@ -1210,10 +1255,27 @@ class VolumeViewerWindow(QMainWindow):
         """ROI 육면체 클리핑 평면 및 단면 컷팅 평면 일괄 적용"""
         self.volume_mapper.RemoveAllClippingPlanes()
 
-        # 1. ROI 적용: 회전된 육면체(OBB) 6개 평면을 추출하여 내부만 남김
+        # 1. ROI 적용:
+        # 직교 ROI인 경우 SetCropping(1) 및 SetCroppingRegionPlanes로 하드웨어 레벨에서 정확하게 크롭합니다.
+        # 박스가 실제로 회전된 OBB 상태일 때만 box_widget 6평면 클리핑을 적용합니다.
         apply_roi = hasattr(self, "chk_roi_apply") and self.chk_roi_apply.isChecked()
         bounds = self.state_mgr.roi_bounds
-        if apply_roi and bounds is not None and hasattr(self, "box_widget"):
+
+        is_rotated = False
+        if hasattr(self, "box_widget"):
+            t = vtk.vtkTransform()
+            self.box_widget.GetTransform(t)
+            m = t.GetMatrix()
+            for r in range(3):
+                for c in range(3):
+                    exp = 1.0 if r == c else 0.0
+                    if abs(m.GetElement(r, c) - exp) > 1e-3:
+                        is_rotated = True
+                        break
+                if is_rotated:
+                    break
+
+        if apply_roi and bounds is not None and is_rotated and hasattr(self, "box_widget"):
             planes = vtk.vtkPlanes()
             self.box_widget.GetPlanes(planes)
 
@@ -1309,9 +1371,20 @@ class VolumeViewerWindow(QMainWindow):
         self._set_plane_visible("sagittal", False)
 
         # 4. ROI 설정 초기화 (기존 사용자가 설정한 바운더리가 없을 때만 None으로 초기화)
-        self.chk_roi_apply.setChecked(self.state_mgr.roi_bounds is not None)
+        bounds = self.state_mgr.roi_bounds
+        self.chk_roi_apply.setChecked(bounds is not None)
         self.chk_roi_box.setChecked(True)
-        if self.state_mgr.roi_bounds is None:
+        if bounds is not None:
+            if hasattr(self, "roi_box_source"):
+                self.roi_box_source.SetBounds(bounds)
+            if hasattr(self, "box_widget"):
+                try:
+                    t_identity = vtk.vtkTransform()
+                    self.box_widget.SetTransform(t_identity)
+                    self.box_widget.PlaceWidget(bounds)
+                except Exception:
+                    pass
+        else:
             self.state_mgr.set_roi_bounds(None)
         self._update_volume_cropping()
         self._update_roi_box_visibility()
@@ -1439,6 +1512,7 @@ class VolumeViewerWindow(QMainWindow):
             except Exception:
                 pass
         if self.state_mgr.vtk_image is not None:
+            self._update_volume_cropping()
             self.render()
 
     def closeEvent(self, event):
@@ -1532,25 +1606,29 @@ class VolumeViewerWindow(QMainWindow):
                                         return True
 
                     # 1) 3D 기즈모 핸들 조작 체크
-                    if hasattr(self, "implant_gizmo_3d") and self.implant_gizmo_3d.is_attached:
-                        if self.implant_gizmo_3d.start_drag(None, screen_x, screen_y, self.renderer):
+                    can_select = (not getattr(self, "is_result_view_mode", False)) and (
+                        not hasattr(self, "chk_implant_selectable") or self.chk_implant_selectable.isChecked()
+                    )
+                    if can_select:
+                        if hasattr(self, "implant_gizmo_3d") and self.implant_gizmo_3d.is_attached:
+                            if self.implant_gizmo_3d.start_drag(None, screen_x, screen_y, self.renderer):
+                                self.render()
+                                return True
+
+                        # 2) 3D 임플란트 피킹 체크
+                        hit_imp = self.state_mgr.implant_placement_mgr.find_implant_by_screen_ray(self.renderer, screen_x, screen_y)
+                        if hit_imp:
+                            self.state_mgr.implant_placement_mgr.select_implant(hit_imp.id, multi_select=False)
+                            self.implant_gizmo_3d.attach_to_implant(hit_imp.id)
+                            if hasattr(self, "chk_sync_coords") and self.chk_sync_coords.isChecked():
+                                self.state_mgr.set_coordinates(float(hit_imp.position[0]), float(hit_imp.position[1]), float(hit_imp.position[2]))
                             self.render()
                             return True
-
-                    # 2) 3D 임플란트 피킹 체크
-                    hit_imp = self.state_mgr.implant_placement_mgr.find_implant_by_screen_ray(self.renderer, screen_x, screen_y)
-                    if hit_imp:
-                        self.state_mgr.implant_placement_mgr.select_implant(hit_imp.id, multi_select=False)
-                        self.implant_gizmo_3d.attach_to_implant(hit_imp.id)
-                        if hasattr(self, "chk_sync_coords") and self.chk_sync_coords.isChecked():
-                            self.state_mgr.set_coordinates(float(hit_imp.position[0]), float(hit_imp.position[1]), float(hit_imp.position[2]))
-                        self.render()
-                        return True
-                    elif hasattr(self, "implant_gizmo_3d") and self.implant_gizmo_3d.is_attached:
-                        # 빈 영역 클릭 시 기즈모 해제
-                        self.state_mgr.implant_placement_mgr.clear_selection()
-                        self.implant_gizmo_3d.detach()
-                        self.render()
+                        elif hasattr(self, "implant_gizmo_3d") and self.implant_gizmo_3d.is_attached:
+                            # 빈 영역 클릭 시 기즈모 해제
+                            self.state_mgr.implant_placement_mgr.clear_selection()
+                            self.implant_gizmo_3d.detach()
+                            self.render()
 
                 elif event.button() == Qt.MouseButton.RightButton:
                     pos = event.position().toPoint()
@@ -1808,6 +1886,12 @@ class VolumeViewerWindow(QMainWindow):
     def _on_implant_selected_3d(self, implant_id: str):
         """2D 뷰 또는 다이얼로그에서 임플란트 선택 변경 시 3D 기즈모 및 좌표 동기화"""
         if not hasattr(self, "implant_gizmo_3d"):
+            return
+        can_select = (not getattr(self, "is_result_view_mode", False)) and (
+            not hasattr(self, "chk_implant_selectable") or self.chk_implant_selectable.isChecked()
+        )
+        if not can_select:
+            self.implant_gizmo_3d.detach()
             return
         if implant_id and implant_id in self.state_mgr.implant_placement_mgr.implants:
             self.implant_gizmo_3d.attach_to_implant(implant_id)

@@ -73,7 +73,7 @@ class TestImplantUI(unittest.TestCase):
         # 탭 개수 및 이름 확인
         tab_widget = ctrl.workflow_tabs
         tab_titles = [tab_widget.tabText(i) for i in range(tab_widget.count())]
-        self.assertIn("3. 임플란트", tab_titles)
+        self.assertIn("2. 임플란트", tab_titles)
 
     def test_02_implant_panel_ui_controls_and_crosshair_placement(self):
         """ImplantPanel에서 STL 로드 및 crosshair 배치 버튼 동작 검증"""

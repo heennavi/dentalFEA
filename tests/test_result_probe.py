@@ -178,6 +178,12 @@ def test_mark_maximum_and_signals(offscreen_controller):
     assert probe._max_sphere_actor is None
     assert probe._max_caption_actor is None
 
+    # Test mark_max_stress alias
+    max_alias = probe.mark_max_stress(field="von_mises", part_name="bone")
+    assert max_alias["value"] == pytest.approx(25.0)
+    assert probe._max_sphere_actor is not None
+    probe.clear_markers()
+
 
 def test_probe_marker_update_and_clear(offscreen_controller):
     """Test probe marker creation via internal update and clean up."""

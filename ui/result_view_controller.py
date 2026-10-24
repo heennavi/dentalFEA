@@ -48,6 +48,12 @@ FIELD_DISPLAY_CONFIG = {
         "is_cell": True,
         "default_cmap": "viridis",
     },
+    "equiv_strain": {
+        "title": "Equivalent Strain",
+        "unit": "µε",
+        "is_cell": False,
+        "default_cmap": "rainbow",
+    },
 }
 
 
@@ -102,6 +108,8 @@ class ResultViewController(QObject):
         self._clip_normal: Optional[Tuple[float, float, float]] = None
         self._edges_visible: bool = False
         self._use_linear_default: bool = False
+        self._load_arrow_actors: List[vtk.vtkProp] = []
+        self._load_arrow_visible: bool = False
 
     # -------------------------------------------------------------------------
     # 렌더링 통합 진입점
@@ -225,6 +233,11 @@ class ResultViewController(QObject):
         # 5. 기본 필드 및 범위 적용
         self.set_field(self._current_field)
         self._update_pipeline()
+
+        # 6. 해석 결과 3D 모드 활성화 (임플란트 선택 기즈모 숨김)
+        if self.window is not None and hasattr(self.window, "set_result_view_mode"):
+            self.window.set_result_view_mode(True)
+
         self._render()
 
     def clear(self) -> None:
@@ -240,12 +253,17 @@ class ResultViewController(QObject):
         self._clippers.clear()
         self._clip_surface_filters.clear()
 
-        # 2. 스칼라 바 제거
+        # 2. 하중 화살표 액터 제거
+        for prop in self._load_arrow_actors:
+            self.renderer.RemoveViewProp(prop)
+        self._load_arrow_actors.clear()
+
+        # 3. 스칼라 바 제거
         if self._scalar_bar is not None:
             self.renderer.RemoveActor(self._scalar_bar)
             self._scalar_bar = None
 
-        # 3. 원래 장면 액터 가시성 복원
+        # 4. 원래 장면 액터 가시성 복원
         for prop, vis in self._original_visibilities.items():
             try:
                 prop.SetVisibility(vis)
@@ -256,6 +274,119 @@ class ResultViewController(QObject):
         self._model = None
         self._rs = None
         self._materials = None
+
+        # 5. 해석 결과 3D 모드 해제 (원래 상태 복구)
+        if self.window is not None and hasattr(self.window, "set_result_view_mode"):
+            self.window.set_result_view_mode(False)
+
+        self._render()
+
+    def set_load_arrow_visible(self, visible: bool, bc_set: Optional[Any] = None) -> None:
+        """
+        교합 하중 화살표 가시성 설정 (3D 조작 기즈모는 일체 미표시).
+        화면에 단 1개의 대표 화살표만 관리하여 중복 생성을 방지합니다.
+        """
+        self._load_arrow_visible = visible
+        for prop in self._load_arrow_actors:
+            self.renderer.RemoveViewProp(prop)
+        self._load_arrow_actors.clear()
+
+        if not visible or self._model is None:
+            self._render()
+            return
+
+        if bc_set is None:
+            self._render()
+            return
+
+        loads = getattr(bc_set, "loads", [])
+        if not loads:
+            self._render()
+            return
+
+        for load in loads:
+            force_N = np.asarray(load.get("force_N", (0.0, 0.0, 0.0)), dtype=np.float64)
+            mag = float(np.linalg.norm(force_N))
+            if mag < 1e-6:
+                continue
+
+            part_name = load.get("part", "")
+            part = self._model.get_part(part_name)
+            node_ids = load.get("node_ids", np.array([], dtype=np.int64))
+
+            if part is not None and len(node_ids) > 0:
+                load_pts = part.nodes[node_ids]
+                center = np.mean(load_pts, axis=0)
+            else:
+                imp_part = self._model.get_part("implant")
+                if imp_part is not None and len(imp_part.nodes) > 0:
+                    center = imp_part.nodes[np.argmax(imp_part.nodes[:, 2])]
+                else:
+                    all_nodes = [p.nodes for p in self._model.parts if len(p.nodes) > 0]
+                    if all_nodes:
+                        stacked = np.vstack(all_nodes)
+                        center = stacked[np.argmax(stacked[:, 2])]
+                    else:
+                        center = np.array([0.0, 0.0, 0.0])
+
+            arrow = vtk.vtkArrowSource()
+            arrow.SetTipResolution(16)
+            arrow.SetShaftResolution(16)
+            arrow.SetTipLength(0.3)
+            arrow.SetTipRadius(0.12)
+            arrow.SetShaftRadius(0.04)
+
+            dir_vec = force_N / mag
+            base_vec = np.array([1.0, 0.0, 0.0])
+            axis = np.cross(base_vec, dir_vec)
+            axis_norm = np.linalg.norm(axis)
+            dot = np.dot(base_vec, dir_vec)
+            angle_deg = np.degrees(np.arccos(np.clip(dot, -1.0, 1.0)))
+
+            arrow_len = min(20.0, max(8.0, mag * 0.08))
+
+            transform = vtk.vtkTransform()
+            start_pt = center - dir_vec * arrow_len
+            transform.Translate(start_pt[0], start_pt[1], start_pt[2])
+            if axis_norm > 1e-6:
+                axis = axis / axis_norm
+                transform.RotateWXYZ(angle_deg, axis[0], axis[1], axis[2])
+            elif dot < -0.9999:
+                transform.RotateWXYZ(180.0, 0.0, 1.0, 0.0)
+            transform.Scale(arrow_len, arrow_len, arrow_len)
+
+            tf_filter = vtk.vtkTransformPolyDataFilter()
+            tf_filter.SetTransform(transform)
+            tf_filter.SetInputConnection(arrow.GetOutputPort())
+            tf_filter.Update()
+
+            mapper = vtk.vtkPolyDataMapper()
+            mapper.SetInputConnection(tf_filter.GetOutputPort())
+
+            actor = vtk.vtkActor()
+            actor.SetMapper(mapper)
+            actor.GetProperty().SetColor(0.95, 0.25, 0.25)
+            actor.GetProperty().SetSpecular(0.4)
+            self.renderer.AddActor(actor)
+            self._load_arrow_actors.append(actor)
+
+            # 하중 크기 및 경사 각도(tilt_deg) 동시 계산 (수직 하향 벡터 대비 사이각)
+            ref_down = np.array([0.0, 0.0, -1.0], dtype=np.float64)
+            cos_tilt = np.clip(np.dot(dir_vec, ref_down), -1.0, 1.0)
+            tilt_deg = float(np.degrees(np.arccos(cos_tilt)))
+
+            text_actor = vtk.vtkBillboardTextActor3D()
+            text_actor.SetInput(f"{mag:.1f} N, {tilt_deg:.1f}°")
+            text_actor.SetPosition(start_pt[0], start_pt[1], start_pt[2] + 2.0)
+            text_prop = text_actor.GetTextProperty()
+            text_prop.SetFontSize(14)
+            text_prop.SetColor(1.0, 0.3, 0.3)
+            text_prop.BoldOn()
+            self.renderer.AddActor(text_actor)
+            self._load_arrow_actors.append(text_actor)
+
+            # 단 1개만 생성
+            break
 
         self._render()
 

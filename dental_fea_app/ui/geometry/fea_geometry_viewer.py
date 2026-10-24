@@ -520,68 +520,77 @@ class FeaGeometryViewWidget(QWidget):
             self.renderer.AddActor(actor_fix)
             self.bc_actors.append(actor_fix)
 
-        # 2. 하중 벡터(Loads) 시각화: 빨간색 화살표 글리프
-        for load in bc_set.loads:
-            p_name = load.get("part", "")
-            part = mesh_model.get_part(p_name)
-            node_ids = load.get("node_ids", np.array([], dtype=np.int64))
-            force_N = np.asarray(load.get("force_N", (0.0, 0.0, 0.0)), dtype=np.float64)
-            mag = float(np.linalg.norm(force_N))
+        # 2. 하중 벡터(Loads) 시각화: 화면에 2개 이상의 화살표 생성 방지 (단 1개로 단일화)
+        has_gizmo = hasattr(self, "load_gizmo") and self.load_gizmo is not None and self.load_gizmo.is_visible
+        if not has_gizmo:
+            load_added = False
+            for load in bc_set.loads:
+                if load_added:
+                    break
+                p_name = load.get("part", "")
+                part = mesh_model.get_part(p_name)
+                node_ids = load.get("node_ids", np.array([], dtype=np.int64))
+                force_N = np.asarray(load.get("force_N", (0.0, 0.0, 0.0)), dtype=np.float64)
+                mag = float(np.linalg.norm(force_N))
 
-            if part is not None and len(node_ids) > 0 and mag > 1e-6:
-                load_pts = part.nodes[node_ids]
-                center = np.mean(load_pts, axis=0)
+                if part is not None and len(node_ids) > 0 and mag > 1e-6:
+                    load_pts = part.nodes[node_ids]
+                    center = np.mean(load_pts, axis=0)
 
-                # 화살표 소스 생성
-                arrow = vtk.vtkArrowSource()
-                arrow.SetTipResolution(16)
-                arrow.SetShaftResolution(16)
-                arrow.SetTipLength(0.3)
-                arrow.SetTipRadius(0.12)
-                arrow.SetShaftRadius(0.04)
+                    # 화살표 소스 생성
+                    arrow = vtk.vtkArrowSource()
+                    arrow.SetTipResolution(16)
+                    arrow.SetShaftResolution(16)
+                    arrow.SetTipLength(0.3)
+                    arrow.SetTipRadius(0.12)
+                    arrow.SetShaftRadius(0.04)
 
-                # 정규화 방향 벡터
-                dir_vec = force_N / mag
+                    # 정규화 방향 벡터
+                    dir_vec = force_N / mag
 
-                # 기본 방향 (1, 0, 0)에서 dir_vec로의 회전 축 및 각도
-                base_vec = np.array([1.0, 0.0, 0.0])
-                axis = np.cross(base_vec, dir_vec)
-                axis_norm = np.linalg.norm(axis)
-                dot = np.dot(base_vec, dir_vec)
-                angle_deg = np.degrees(np.arccos(np.clip(dot, -1.0, 1.0)))
+                    base_vec = np.array([1.0, 0.0, 0.0])
+                    axis = np.cross(base_vec, dir_vec)
+                    axis_norm = np.linalg.norm(axis)
+                    dot = np.dot(base_vec, dir_vec)
+                    angle_deg = np.degrees(np.arccos(np.clip(dot, -1.0, 1.0)))
 
-                arrow_len = min(15.0, max(5.0, mag * 0.08))
+                    arrow_len = min(15.0, max(5.0, mag * 0.08))
 
-                transform = vtk.vtkTransform()
-                # 화살표 팁이 작용점(center)을 가리키도록 배치
-                start_pt = center - dir_vec * arrow_len
-                transform.Translate(start_pt[0], start_pt[1], start_pt[2])
-                if axis_norm > 1e-6:
-                    axis = axis / axis_norm
-                    transform.RotateWXYZ(angle_deg, axis[0], axis[1], axis[2])
-                elif dot < -0.9999:
-                    transform.RotateWXYZ(180.0, 0.0, 1.0, 0.0)
-                transform.Scale(arrow_len, arrow_len, arrow_len)
+                    transform = vtk.vtkTransform()
+                    start_pt = center - dir_vec * arrow_len
+                    transform.Translate(start_pt[0], start_pt[1], start_pt[2])
+                    if axis_norm > 1e-6:
+                        axis = axis / axis_norm
+                        transform.RotateWXYZ(angle_deg, axis[0], axis[1], axis[2])
+                    elif dot < -0.9999:
+                        transform.RotateWXYZ(180.0, 0.0, 1.0, 0.0)
+                    transform.Scale(arrow_len, arrow_len, arrow_len)
 
-                tf_filter = vtk.vtkTransformPolyDataFilter()
-                tf_filter.SetTransform(transform)
-                tf_filter.SetInputConnection(arrow.GetOutputPort())
-                tf_filter.Update()
+                    tf_filter = vtk.vtkTransformPolyDataFilter()
+                    tf_filter.SetTransform(transform)
+                    tf_filter.SetInputConnection(arrow.GetOutputPort())
+                    tf_filter.Update()
 
-                mapper_load = vtk.vtkPolyDataMapper()
-                mapper_load.SetInputConnection(tf_filter.GetOutputPort())
+                    mapper_load = vtk.vtkPolyDataMapper()
+                    mapper_load.SetInputConnection(tf_filter.GetOutputPort())
 
-                actor_load = vtk.vtkActor()
-                actor_load.SetMapper(mapper_load)
-                actor_load.GetProperty().SetColor(0.95, 0.25, 0.25)  # 빨간색
-                self.renderer.AddActor(actor_load)
-                self.bc_actors.append(actor_load)
+                    actor_load = vtk.vtkActor()
+                    actor_load.SetMapper(mapper_load)
+                    actor_load.GetProperty().SetColor(0.95, 0.25, 0.25)  # 빨간색
+                    self.renderer.AddActor(actor_load)
+                    self.bc_actors.append(actor_load)
+                    load_added = True
 
         self.render()
 
     def _on_toggle_load_visibility(self, visible: bool):
         """교합 하중 보기/감추기 토글 슬롯"""
         self.btn_toggle_load.setIcon(IconFactory.visibility_eye(visible, 20))
+        if visible:
+            # 기즈모 화살표가 켜질 때 중복 액터 정리
+            bc_set = getattr(self.state_mgr, "bc_set", None)
+            if bc_set is not None:
+                self._on_bc_set_changed(bc_set)
         self.load_gizmo.set_visibility(visible)
         self.render()
 

@@ -376,7 +376,7 @@ class TestFeaControllerHeadless:
         state_mgr = StateManager()
         ctrl = ControlPanel(state_mgr, on_open_3d_viewer=lambda: None)
 
-        assert ctrl.minimumWidth() <= 240
+        assert ctrl.minimumWidth() <= 276
         assert ctrl.maximumWidth() >= 600
 
     def test_gmsh_thread_initialization(self):

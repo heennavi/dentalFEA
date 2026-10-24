@@ -192,11 +192,21 @@ class TestUserInfoAndDrawing(unittest.TestCase):
         self.assertIn("roi_bounds", data)
         self.assertEqual(data["roi_bounds"], list(test_roi))
 
-        # 2. 다른 인스턴스에서 로드 시 ROI 복원 확인
+        # 2. 다른 인스턴스에서 로드 시 ROI 복원 확인 및 3D 뷰어 연동 검증
         main_win2 = MainWindow()
         main_win2.state_mgr.set_volume_data(vtk_img, meta)
         main_win2.mpr_container.set_user_info_data(data)
         self.assertEqual(main_win2.state_mgr.roi_bounds, test_roi)
+
+        # 3D 뷰어 오픈 시 ROI가 즉시 적용되고 직교 크로핑이 정상 작동하는지 확인
+        main_win2.open_3d_viewer()
+        v_win = main_win2.volume_window
+        self.assertTrue(v_win.chk_roi_apply.isChecked())
+        self.assertEqual(v_win.volume_mapper.GetCropping(), 1)
+        planes_out = v_win.volume_mapper.GetCroppingRegionPlanes()
+        self.assertEqual(tuple(planes_out), test_roi)
+        clip_planes = v_win.volume_mapper.GetClippingPlanes()
+        self.assertTrue(clip_planes is None or clip_planes.GetNumberOfPlanes() == 0)
 
         # 3. 기본 파일명 규칙 검증: DICOM 파일명_YYYYMMDD_HHMMSS.json
         base_dir = os.path.join(project_root, "saved")

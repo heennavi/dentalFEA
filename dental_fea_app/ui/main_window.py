@@ -82,7 +82,7 @@ class MainWindow(QMainWindow):
         # 메인 스플리터 (좌: 컨트롤 패널, 우: MPR 영역)
         self.splitter = QSplitter(Qt.Orientation.Horizontal, self)
 
-        # 좌측 컨트롤 패널 (슬림 240px)
+        # 좌측 컨트롤 패널 (276px, 15% 확대)
         self.control_panel = ControlPanel(
             state_manager=self.state_mgr,
             on_open_3d_viewer=self.open_3d_viewer,
@@ -98,7 +98,7 @@ class MainWindow(QMainWindow):
         )
         self.splitter.addWidget(self.mpr_container)
 
-        self.splitter.setSizes([240, 1160])
+        self.splitter.setSizes([276, 1124])
         self.splitter.setCollapsible(0, False)
         self.splitter.setCollapsible(1, False)
 
@@ -347,11 +347,23 @@ class MainWindow(QMainWindow):
 
         self.volume_window = VolumeViewerWindow(self.state_mgr)
         self.volume_window.window_closed.connect(self._on_volume_window_closed)
+
+        # 3D 결과 시각화 컨트롤러 연동
+        if hasattr(self.control_panel, "result_controller"):
+            from ui.result_view_controller import ResultViewController
+            rvc = ResultViewController(self.volume_window)
+            self.control_panel.result_controller.set_view_controller(rvc)
+
         self.volume_window.show()
         self.volume_window.raise_()
         self.volume_window.activateWindow()
 
     def _on_volume_window_closed(self):
+        if hasattr(self.control_panel, "result_controller"):
+            # 뷰어 창 닫힘 시 뷰 컨트롤러 해제
+            self.control_panel.result_controller.view_controller = None
+            if hasattr(self.control_panel.result_controller, "probe"):
+                self.control_panel.result_controller.probe.detach()
         self.volume_window = None
 
     def _on_volume_loaded(self, vtk_image):

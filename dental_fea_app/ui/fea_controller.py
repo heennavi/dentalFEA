@@ -419,7 +419,7 @@ class FeaController(QObject):
         self,
         inp_path: Optional[str] = None,
         ccx_path: Optional[str] = None,
-        n_threads: int = 4,
+        n_threads: int = 8,
     ):
         """
         Run CalculiX solver asynchronously.

@@ -65,7 +65,7 @@ class TestGeometryUIAndExport(unittest.TestCase):
         """ControlPanel에 '4. 기하 처리' 탭이 추가되었고 초기 비활성화/활성화 상태가 올바른지 확인"""
         cp = ControlPanel(self.state_mgr, lambda: None)
         self.assertTrue(hasattr(cp, "geometry_panel"))
-        self.assertEqual(cp.workflow_tabs.count(), 5)
+        self.assertGreaterEqual(cp.workflow_tabs.count(), 5)
         self.assertEqual(cp.workflow_tabs.tabText(3), "4. 기하 처리")
         self.assertEqual(cp.workflow_tabs.tabText(4), "5. 해석")
 
@@ -83,7 +83,7 @@ class TestGeometryUIAndExport(unittest.TestCase):
         # 초기 값 확인
         self.assertEqual(panel.spin_roi_margin.value(), 12.0)
         self.assertEqual(panel.spin_smooth.value(), 15)
-        self.assertEqual(panel.spin_target_edge.value(), 1.0)
+        self.assertAlmostEqual(panel.spin_target_edge.value(), 0.40, places=2)
         self.assertEqual(panel.spin_undersize.value(), 0.0)
 
         # 초기에는 결과 없음

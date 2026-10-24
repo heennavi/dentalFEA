@@ -194,16 +194,23 @@ class TestBuildResultSet:
             build_result_set(frd, model)
 
     def test_coordinate_mismatch_raises_value_error(self):
-        """Verify that coordinate mismatch (> 1e-4 mm) raises ValueError with Korean message."""
+        """Verify that coordinate mismatch (> 1.5e-3 mm) raises ValueError with Korean message."""
         model, all_node_ids, all_coords = self._create_synthetic_model_and_frd()
 
-        # Perturb one coordinate by 0.01 mm
+        # CalculiX 12.5f 반올림 수준의 미세 오차(0.0005 mm)는 허용됨을 검증
+        slight_coords = all_coords.copy()
+        slight_coords[0, 0] += 0.0005
+        frd_slight = FrdData(node_ids=all_node_ids, node_coords=slight_coords, blocks=[])
+        rs_slight = build_result_set(frd_slight, model)
+        assert rs_slight is not None
+
+        # Perturb one coordinate by 0.01 mm (> 1.5e-3 mm) -> raises
         perturbed_coords = all_coords.copy()
         perturbed_coords[0, 0] += 0.01
 
         frd = FrdData(node_ids=all_node_ids, node_coords=perturbed_coords, blocks=[])
 
-        with pytest.raises(ValueError, match="허용 오차 1e-4 mm"):
+        with pytest.raises(ValueError, match="허용 오차 1.5e-3 mm"):
             build_result_set(frd, model)
 
     def test_partial_nodes_in_block_populates_nan(self):

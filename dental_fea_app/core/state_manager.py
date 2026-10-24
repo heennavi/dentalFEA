@@ -56,6 +56,11 @@ class StateManager(QObject):
     last_frd_path_changed = Signal(str)                 # str (.frd path)
     fea_stale_changed = Signal(bool)                    # True if upstream geometry changed
 
+    # Phase 4 FEA 결과 파이프라인 Signals
+    result_set_changed = Signal(object)                 # ResultSet or None
+    result_stats_changed = Signal(dict)                 # dict
+    result_source_frd_changed = Signal(str)             # str (.frd path)
+
 
     def __init__(self, parent: Optional[QObject] = None):
         super().__init__(parent)
@@ -121,6 +126,11 @@ class StateManager(QObject):
         self._last_frd_path: Optional[str] = None
         self._fea_is_stale: bool = False
         self._bc_fix_box: Optional[Tuple[float, float, float, float, float, float]] = None
+
+        # Phase 4 FEA 결과 상태
+        self._result_set = None
+        self._result_stats = None
+        self._result_source_frd: Optional[str] = None
 
         # 상류 데이터 변경 시 FEA 무효화 연결
         self.implant_pose_changed.connect(lambda *_: self.invalidate_fea_pipeline())
@@ -289,12 +299,58 @@ class StateManager(QObject):
 
     def set_fea_stale(self, stale: bool):
         self._fea_is_stale = bool(stale)
+        if self._fea_is_stale:
+            if self._result_set is not None or self._result_stats is not None:
+                self._result_set = None
+                self._result_stats = None
+                self._result_source_frd = None
+                self.result_set_changed.emit(None)
+                self.result_stats_changed.emit({})
+                self.result_source_frd_changed.emit("")
         self.fea_stale_changed.emit(self._fea_is_stale)
+
+    # Phase 4 FEA 결과 프로퍼티 및 제어
+    @property
+    def result_set(self):
+        return self._result_set
+
+    def set_result_set(self, rs):
+        self._result_set = rs
+        self.result_set_changed.emit(self._result_set)
+
+    @property
+    def result_stats(self) -> Optional[dict]:
+        return self._result_stats
+
+    def set_result_stats(self, stats: Optional[dict]):
+        self._result_stats = stats
+        self.result_stats_changed.emit(self._result_stats or {})
+
+    @property
+    def result_source_frd(self) -> Optional[str]:
+        return self._result_source_frd
+
+    def set_result_source_frd(self, path: Optional[str]):
+        self._result_source_frd = path
+        self.result_source_frd_changed.emit(self._result_source_frd or "")
 
     def invalidate_fea_pipeline(self):
         """상류 지오메트리/임플란트/분할 변경 시 FEA 파이프라인 무효화"""
-        if self._mesh_model is not None or self._material_assignment is not None or self._bc_set is not None:
-            self._fea_is_stale = True
+        should_emit = False
+        if self._mesh_model is not None or self._material_assignment is not None or self._bc_set is not None or self._result_set is not None:
+            if not self._fea_is_stale:
+                self._fea_is_stale = True
+                should_emit = True
+
+        if self._result_set is not None or self._result_stats is not None:
+            self._result_set = None
+            self._result_stats = None
+            self._result_source_frd = None
+            self.result_set_changed.emit(None)
+            self.result_stats_changed.emit({})
+            self.result_source_frd_changed.emit("")
+
+        if should_emit:
             self.fea_stale_changed.emit(True)
 
 
@@ -403,6 +459,9 @@ class StateManager(QObject):
                 self.set_bc_set(None)
             if hasattr(self, "set_fea_results"):
                 self.set_fea_results(None)
+            self.set_result_set(None)
+            self.set_result_stats(None)
+            self.set_result_source_frd(None)
 
         self._vtk_image = vtk_image
         self._metadata = metadata or {}

@@ -170,7 +170,7 @@ def mesh_closed_surface(
     size_near: float,
     refine_surface_stl: Optional[str] = None,
     element_order: int = 2,
-    max_elements: int = 1_500_000,
+    max_elements: int = 3_000_000,
     mesh_algorithm_3d: str = "auto",
     optimize_netgen: bool = True,
 ) -> Tuple[np.ndarray, np.ndarray]:
@@ -183,7 +183,7 @@ def mesh_closed_surface(
         size_near: Near-field target mesh edge length (mm).
         refine_surface_stl: Optional path to STL surface near which to refine mesh.
         element_order: 1 for linear tetrahedra (C3D4), 2 for quadratic tetrahedra (C3D10).
-        max_elements: Maximum allowable element count safety limit (default 1,500,000).
+        max_elements: Maximum allowable element count safety limit (default 3,000,000).
         mesh_algorithm_3d: 3D meshing algorithm ("auto", "delaunay", "netgen", "hxt").
         optimize_netgen: If True, enables Netgen 3D volume optimizer to eliminate ill-shaped tets.
 
@@ -227,9 +227,18 @@ def mesh_closed_surface(
 
     # 2. 요소 수 추정 및 상한 검사
     vol = abs(float(mesh.volume))
-    # 단일 사면체 대략 체적: ~0.118 * h^3
-    char_size = min(size_near, size_far)
-    est_elements = int(vol / (0.118 * (char_size ** 3)))
+    # refine_surface_stl이 제공된 경우(임플란트 주변 국소 세분화):
+    # 크기장(Threshold field)은 임플란트 표면 근처에만 size_near를 적용하고 나머지 골 조직의 85% 이상은 size_far로 생성됩니다.
+    # 따라서 전체 체적을 size_near로 과대 산출하지 않고 체적 가중 평균을 반영하여 현실적으로 추정합니다.
+    if refine_surface_stl and os.path.exists(refine_surface_stl):
+        est_elements = int(
+            (0.85 * vol) / (0.118 * (size_far ** 3)) +
+            (0.15 * vol) / (0.118 * (size_near ** 3))
+        )
+    else:
+        char_size = min(size_near, size_far)
+        est_elements = int(vol / (0.118 * (char_size ** 3)))
+
     logger.info(
         f"Gmsh 체적 메싱 시작: 예상 요소 수 ~{est_elements:,} "
         f"(체적: {vol:.2f} mm^3, size_near={size_near}mm, size_far={size_far}mm, algo={mesh_algorithm_3d})"
@@ -474,7 +483,7 @@ def build_part_mesh(
     size_near: float,
     refine_surface: Optional[Union[str, Any]] = None,
     order: int = 2,
-    max_elements: int = 1_500_000,
+    max_elements: int = 3_000_000,
     mesh_algorithm_3d: str = "auto",
     optimize_netgen: bool = True,
 ) -> MeshPart:
