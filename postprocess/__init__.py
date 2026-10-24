@@ -26,6 +26,10 @@ from .vtk_builder import (
     set_deform_scale,
     write_vtu,
 )
+from .peri_implant import (
+    peri_implant_stats,
+    extract_bone_interface_nodes,
+)
 from .exporters import (
     export_nodal_csv,
     export_stats_csv,
@@ -50,6 +54,8 @@ __all__ = [
     "surface_of",
     "set_deform_scale",
     "write_vtu",
+    "peri_implant_stats",
+    "extract_bone_interface_nodes",
     "export_nodal_csv",
     "export_stats_csv",
     "export_stats_json",

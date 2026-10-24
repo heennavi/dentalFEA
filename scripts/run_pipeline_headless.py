@@ -141,6 +141,17 @@ def main():
         default=12.0,
         help="ROI bounding radius around implant in mm for fast local meshing (default: 12.0)"
     )
+    parser.add_argument(
+        "--run-postprocess",
+        action="store_true",
+        help="Execute Phase 4 headless post-processing pipeline after solver completes"
+    )
+    parser.add_argument(
+        "--peri-radius-mm",
+        type=float,
+        default=1.0,
+        help="Peri-implant bone evaluation radius in mm (default: 1.0)"
+    )
 
     args = parser.parse_args()
     os.makedirs(args.output, exist_ok=True)
@@ -442,6 +453,16 @@ def main():
                 logger.info(f"  CalculiX solve completed successfully! (Elapsed: {t_solv:.2f}s)")
                 logger.info(f"  Maximum Resultant Displacement: {max_disp:.6f} mm")
                 logger.info(f"  Maximum Von Mises Stress: {max_mises:.2f} MPa")
+
+                if args.run_postprocess:
+                    logger.info("  Launching Phase 4 Headless Post-Processing Pipeline...")
+                    from scripts.run_postprocess_headless import run_postprocess
+                    post_out = os.path.join(args.output, "postprocess")
+                    run_postprocess(
+                        workdir=args.output,
+                        output_dir=post_out,
+                        radius_mm=args.peri_radius_mm,
+                    )
             else:
                 logger.error(f"  CalculiX execution failed with exit code {res.returncode}:\n{res.stdout[-500:]}\n{res.stderr[-500:]}")
     else:
