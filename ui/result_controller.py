@@ -4,18 +4,27 @@ Controller mediating between StateManager, ResultPanel UI, background QThread wo
 ResultViewController (3D VTK renderer), and ResultProbe (3D peak/nodal probe).
 """
 
-from typing import Optional, Tuple
+import os
+from typing import Optional, Tuple, Dict, Any
 import numpy as np
 from PySide6.QtCore import QObject, Signal
-from PySide6.QtWidgets import QFileDialog
+from PySide6.QtWidgets import QFileDialog, QMessageBox
 
 from dental_fea_app.core.state_manager import StateManager
 from fea.models import MeshModel
 from fea.results import ResultSet
 from postprocess.workers import ResultLoadWorker, PeriImplantRecalcWorker
+from postprocess.exporters import (
+    export_nodal_csv as exp_nodal_csv,
+    export_stats_csv as exp_stats_csv,
+    export_stats_json as exp_stats_json,
+    save_result_bundle as exp_save_bundle,
+    load_result_bundle as exp_load_bundle,
+)
 from ui.result_panel import ResultPanel
 from ui.result_view_controller import ResultViewController
 from ui.result_probe import ResultProbe
+
 
 
 class ResultController(QObject):
@@ -100,6 +109,12 @@ class ResultController(QObject):
         p.mark_max_requested.connect(self.mark_max_stress)
         p.probe_toggled.connect(self.set_probe_enabled)
         p.peri_radius_changed.connect(self.recalc_peri_implant)
+        p.export_csv_requested.connect(self.export_nodal_csv)
+        p.export_stats_requested.connect(self.export_stats)
+        p.save_screenshot_requested.connect(self.save_screenshot)
+        p.save_bundle_requested.connect(self.save_bundle)
+        p.load_bundle_requested.connect(self.load_bundle)
+
 
     # -------------------------------------------------------------------------
     # 결과 파일 로드 파이프라인
@@ -351,3 +366,244 @@ class ResultController(QObject):
         if enabled and (self.view_controller is None or self.view_controller.renderer is None):
             if self.panel is not None:
                 self.panel.lbl_probe_info.setText("ℹ️ 3D 클릭 프로브 활성화됨 (3D 뷰어 창에서 원하는 메쉬 표면을 클릭하세요)")
+
+    # -------------------------------------------------------------------------
+    # 내보내기 및 번들 저장/불러오기 메서드 (Step 4-7)
+    # -------------------------------------------------------------------------
+    def _get_default_save_dir(self) -> str:
+        """Get default directory for exports (job folder or saved/)."""
+        src = self.state_mgr.last_frd_path or self.state_mgr.result_source_frd
+        if src and os.path.exists(os.path.dirname(src)):
+            return os.path.dirname(os.path.abspath(src))
+        saved_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "saved"))
+        if os.path.exists(saved_dir):
+            return saved_dir
+        return os.getcwd()
+
+    def export_nodal_csv(self, file_path: Optional[str] = None) -> bool:
+        """Export all nodal fields across all parts to CSV."""
+        rs = self.state_mgr.result_set
+        model = self.state_mgr.mesh_model
+        if rs is None or model is None:
+            if self.panel is not None:
+                self.panel.show_error("내보낼 해석 결과 또는 메쉬 모델이 없습니다.")
+            return False
+
+        if not file_path:
+            default_path = os.path.join(self._get_default_save_dir(), "nodal_results.csv")
+            file_path, _ = QFileDialog.getSaveFileName(
+                self.panel,
+                "절점 결과 CSV 파일 저장",
+                default_path,
+                "CSV Files (*.csv);;All Files (*.*)",
+            )
+        if not file_path:
+            return False
+
+        try:
+            exp_nodal_csv(file_path, rs, model)
+            if self.panel is not None:
+                QMessageBox.information(
+                    self.panel,
+                    "CSV 저장 완료",
+                    f"절점 결과 데이터가 성공적으로 저장되었습니다:\n{file_path}",
+                )
+            return True
+        except Exception as e:
+            if self.panel is not None:
+                self.panel.show_error(f"CSV 저장 실패: {e}")
+            return False
+
+    def export_stats(self, file_path: Optional[str] = None) -> bool:
+        """Export summary statistics table to CSV or JSON."""
+        stats = self.state_mgr.result_stats
+        if stats is None:
+            if self.panel is not None:
+                self.panel.show_error("내보낼 통계 데이터가 없습니다.")
+            return False
+
+        if not file_path:
+            default_path = os.path.join(self._get_default_save_dir(), "simulation_stats.csv")
+            file_path, selected_filter = QFileDialog.getSaveFileName(
+                self.panel,
+                "통계 표 파일 저장",
+                default_path,
+                "CSV Files (*.csv);;JSON Files (*.json);;All Files (*.*)",
+            )
+        if not file_path:
+            return False
+
+        try:
+            if file_path.lower().endswith(".json"):
+                exp_stats_json(file_path, stats)
+            else:
+                exp_stats_csv(file_path, stats)
+
+            if self.panel is not None:
+                QMessageBox.information(
+                    self.panel,
+                    "통계 저장 완료",
+                    f"통계 데이터가 성공적으로 저장되었습니다:\n{file_path}",
+                )
+            return True
+        except Exception as e:
+            if self.panel is not None:
+                self.panel.show_error(f"통계 저장 실패: {e}")
+            return False
+
+    def save_screenshot(self, scale: int = 1, file_path: Optional[str] = None) -> bool:
+        """Capture 3D simulation visualization screenshot to PNG."""
+        if self.view_controller is None or self.view_controller.renderer is None:
+            if self.panel is not None:
+                self.panel.show_error("3D 뷰어가 활성화되어 있지 않습니다.")
+            return False
+
+        if not file_path:
+            field_name = getattr(self.view_controller, "_current_field", "result")
+            default_path = os.path.join(self._get_default_save_dir(), f"fea_3d_{field_name}.png")
+            file_path, _ = QFileDialog.getSaveFileName(
+                self.panel,
+                "3D 화면 이미지 저장 (PNG)",
+                default_path,
+                "PNG Images (*.png);;All Files (*.*)",
+            )
+        if not file_path:
+            return False
+
+        ok = self.view_controller.save_screenshot(file_path, scale=scale)
+        if ok:
+            if self.panel is not None:
+                QMessageBox.information(
+                    self.panel,
+                    "이미지 저장 완료",
+                    f"3D 화면 이미지가 성공적으로 저장되었습니다 (배율: {scale}x):\n{file_path}",
+                )
+            return True
+        else:
+            if self.panel is not None:
+                self.panel.show_error("3D 화면 캡처 저장에 실패했습니다.")
+            return False
+
+    def save_bundle(self, dir_path: Optional[str] = None) -> bool:
+        """Save results, grids, statistics, and metadata to a bundle folder."""
+        rs = self.state_mgr.result_set
+        model = self.state_mgr.mesh_model
+        stats = self.state_mgr.result_stats
+        if rs is None or model is None:
+            if self.panel is not None:
+                self.panel.show_error("저장할 해석 결과 또는 메쉬 모델이 없습니다.")
+            return False
+
+        if not dir_path:
+            default_dir = os.path.join(self._get_default_save_dir(), "fea_bundle")
+            dir_path = QFileDialog.getExistingDirectory(
+                self.panel,
+                "결과 번들을 저장할 폴더 선택",
+                default_dir,
+            )
+        if not dir_path:
+            return False
+
+        # 기존 번들 파일 존재 시 덮어쓰기 확인
+        npz_check = os.path.join(dir_path, "results.npz")
+        if os.path.exists(npz_check) and self.panel is not None:
+            reply = QMessageBox.question(
+                self.panel,
+                "덮어쓰기 확인",
+                f"선택한 폴더에 이미 결과 번들이 존재합니다:\n{dir_path}\n\n덮어쓰시겠습니까?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return False
+
+        # 메타데이터 구성
+        bc = self.state_mgr.bc_set
+        meta = {
+            "source_frd": self.state_mgr.result_source_frd or self.state_mgr.last_frd_path or "",
+            "active_field": getattr(self.view_controller, "_current_field", "von_mises") if self.view_controller else "von_mises",
+        }
+        if bc is not None:
+            meta["loads_summary"] = [
+                {"part": ld.get("part"), "force_N": ld.get("force_N")}
+                for ld in getattr(bc, "loads", [])
+            ]
+            meta["fixed_sets"] = [
+                {"part": fx.get("part"), "num_nodes": len(fx.get("node_ids", []))}
+                for fx in getattr(bc, "fixed_node_sets", [])
+            ]
+
+        try:
+            exp_save_bundle(dir_path, model, rs, stats or {}, meta)
+            if self.panel is not None:
+                QMessageBox.information(
+                    self.panel,
+                    "결과 번들 저장 완료",
+                    f"해석 결과 번들이 성공적으로 저장되었습니다:\n{dir_path}",
+                )
+            return True
+        except Exception as e:
+            if self.panel is not None:
+                self.panel.show_error(f"결과 번들 저장 실패: {e}")
+            return False
+
+    def load_bundle(self, dir_path: Optional[str] = None) -> bool:
+        """Load results, statistics, and metadata from a bundle folder."""
+        if not dir_path:
+            dir_path = QFileDialog.getExistingDirectory(
+                self.panel,
+                "불러올 결과 번들 폴더 선택",
+                self._get_default_save_dir(),
+            )
+        if not dir_path:
+            return False
+
+        try:
+            rs, stats, meta = exp_load_bundle(dir_path)
+
+            # 모델과의 정합성 검사 (절점 수)
+            cur_model = self.state_mgr.mesh_model
+            if cur_model is not None:
+                rs_nodes = len(rs.u) if rs.u is not None else 0
+                tot_nodes = cur_model.total_nodes()
+                if rs_nodes > 0 and rs_nodes != tot_nodes:
+                    if self.panel is not None:
+                        reply = QMessageBox.warning(
+                            self.panel,
+                            "모델 불일치 경고",
+                            f"불러온 결과의 절점 수({rs_nodes:,}개)가 현재 활성 메쉬 모델의 절점 수({tot_nodes:,}개)와 일치하지 않습니다.\n\n계속 불러오시겠습니까?",
+                            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                            QMessageBox.StandardButton.No,
+                        )
+
+                        if reply != QMessageBox.StandardButton.Yes:
+                            return False
+
+            # 상태 갱신
+            self._last_loaded_frd_path = dir_path
+            self.state_mgr.set_result_set(rs)
+            self.state_mgr.set_result_stats(stats)
+            self.state_mgr.set_result_source_frd(dir_path)
+
+            if self.view_controller is not None and cur_model is not None:
+                self.view_controller.set_results(
+                    cur_model, rs, self.state_mgr.material_assignment
+                )
+
+            if self.panel is not None and cur_model is not None:
+                self.panel.populate_results(rs, stats, cur_model)
+
+            self.results_loaded.emit(rs, stats)
+
+            if self.panel is not None:
+                QMessageBox.information(
+                    self.panel,
+                    "결과 번들 로드 완료",
+                    f"해석 결과 번들을 성공적으로 불러왔습니다:\n{dir_path}",
+                )
+            return True
+        except Exception as e:
+            if self.panel is not None:
+                self.panel.show_error(f"결과 번들 로드 실패: {e}")
+            return False
+

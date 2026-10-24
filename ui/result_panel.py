@@ -45,6 +45,16 @@ class ResultPanel(QWidget):
     probe_toggled = Signal(bool)
     peri_radius_changed = Signal(float)
 
+
+
+    # 내보내기 및 번들 시그널 (Step 4-7)
+    export_csv_requested = Signal()
+    export_stats_requested = Signal()
+    save_screenshot_requested = Signal(int)  # scale factor (1 or 2)
+    save_bundle_requested = Signal()
+    load_bundle_requested = Signal()
+
+
     def __init__(self, state_manager: StateManager, parent: Optional[QWidget] = None):
         super().__init__(parent)
         self.state_mgr = state_manager
@@ -390,23 +400,57 @@ class ResultPanel(QWidget):
         return group
 
     # -------------------------------------------------------------------------
-    # 섹션 4. 내보내기 (Step 4-7 자리)
+    # 섹션 4. 내보내기 (Export)
     # -------------------------------------------------------------------------
     def _create_export_section(self) -> QGroupBox:
-        group = QGroupBox("4. 내보내기 (Export - Step 4-7)", self)
+        group = QGroupBox("4. 내보내기 및 저장 (Export)", self)
         vbox = QVBoxLayout(group)
         vbox.setContentsMargins(6, 6, 6, 6)
-        vbox.setSpacing(4)
+        vbox.setSpacing(6)
 
-        self.btn_export_report = QPushButton("종합 해석 리포트 생성 (PDF/HTML)", group)
-        self.btn_export_report.setEnabled(False)
-        vbox.addWidget(self.btn_export_report)
-
-        self.btn_export_csv = QPushButton("통계 표 및 절점 데이터 CSV 내보내기", group)
-        self.btn_export_csv.setEnabled(False)
+        # 1. CSV 저장 (절점 데이터)
+        self.btn_export_csv = QPushButton("절점 결과 CSV 저장...", group)
+        self.btn_export_csv.clicked.connect(self.export_csv_requested.emit)
         vbox.addWidget(self.btn_export_csv)
 
+        # 2. 통계 저장 (CSV / JSON)
+        self.btn_export_stats = QPushButton("통계 표 저장 (CSV/JSON)...", group)
+        self.btn_export_stats.clicked.connect(self.export_stats_requested.emit)
+        vbox.addWidget(self.btn_export_stats)
+
+        # 3. 3D 화면 이미지 저장 (PNG, 해상도 선택)
+        row_img = QHBoxLayout()
+        self.btn_save_screenshot = QPushButton("3D 화면 이미지 저장...", group)
+        self.btn_save_screenshot.clicked.connect(self._on_screenshot_clicked)
+        row_img.addWidget(self.btn_save_screenshot, stretch=2)
+
+        self.combo_screen_scale = QComboBox(group)
+        self.combo_screen_scale.addItem("1x (현재)", 1)
+        self.combo_screen_scale.addItem("2x (고해상도)", 2)
+        row_img.addWidget(self.combo_screen_scale, stretch=1)
+        vbox.addLayout(row_img)
+
+        # 구분선
+        line = QFrame(group)
+        line.setFrameShape(QFrame.Shape.HLine)
+        line.setFrameShadow(QFrame.Shadow.Sunken)
+        vbox.addWidget(line)
+
+        # 4. 결과 폴더 저장 (Bundle)
+        self.btn_save_bundle = QPushButton("결과 폴더 저장 (Bundle)...", group)
+        self.btn_save_bundle.clicked.connect(self.save_bundle_requested.emit)
+        vbox.addWidget(self.btn_save_bundle)
+
+        # 5. 결과 폴더 불러오기 (Bundle)
+        self.btn_load_bundle = QPushButton("결과 폴더 불러오기 (Bundle)...", group)
+        self.btn_load_bundle.clicked.connect(self.load_bundle_requested.emit)
+        vbox.addWidget(self.btn_load_bundle)
+
         return group
+
+    def _on_screenshot_clicked(self) -> None:
+        scale = self.combo_screen_scale.currentData() or 1
+        self.save_screenshot_requested.emit(int(scale))
 
     # -------------------------------------------------------------------------
     # 제어 및 상태 동기화 API
@@ -415,9 +459,16 @@ class ResultPanel(QWidget):
         """Enable or disable result display and statistics widgets."""
         self.group_display.setEnabled(enabled)
         self.group_stats.setEnabled(enabled)
+        self.btn_export_csv.setEnabled(enabled)
+        self.btn_export_stats.setEnabled(enabled)
+        self.btn_save_screenshot.setEnabled(enabled)
+        self.combo_screen_scale.setEnabled(enabled)
+        self.btn_save_bundle.setEnabled(enabled)
+        self.btn_load_bundle.setEnabled(True)
         if not enabled:
             self.lbl_probe_info.setText("절점을 클릭하거나 최대 위치를 표시하십시오.")
             self.table_stats.setRowCount(0)
+
             self.lbl_equilibrium.setText("힘 평형: --")
 
     def set_loading_state(self, is_loading: bool, message: str = "") -> None:

@@ -6,6 +6,7 @@ Manages VTK actors, mappers, colormaps, scalar bars, deformation scaling,
 and cross-section clipping for postprocess simulation visualization.
 """
 
+import os
 from typing import Optional, Dict, Tuple, Any, List
 import numpy as np
 import vtk
@@ -773,3 +774,47 @@ class ResultViewController(QObject):
             full_title = f"{title}\n{unit}"
 
         self._scalar_bar.SetTitle(full_title.strip())
+
+    # -------------------------------------------------------------------------
+    # 3D 화면 스크린샷 캡처
+    # -------------------------------------------------------------------------
+    def save_screenshot(self, path: str, scale: int = 1) -> bool:
+        """
+        Capture current 3D view including scalar bar and probe labels to PNG image.
+
+        Args:
+            path: Target file path (.png).
+            scale: Resolution scaling factor (e.g. 1 for native, 2 for 2x resolution).
+
+        Returns:
+            bool: True if screenshot was captured and saved successfully, False otherwise.
+        """
+        if self.renderer is None:
+            return False
+
+        rw = self.renderer.GetRenderWindow()
+        if rw is None:
+            return False
+
+        os_dir = os.path.dirname(os.path.abspath(path))
+        if os_dir:
+            os.makedirs(os_dir, exist_ok=True)
+
+        try:
+            rw.Render()
+
+            w2i = vtk.vtkWindowToImageFilter()
+            w2i.SetInput(rw)
+            w2i.SetScale(max(1, int(scale)))
+            w2i.SetInputBufferTypeToRGBA()
+            w2i.ReadFrontBufferOff()
+            w2i.Update()
+
+            writer = vtk.vtkPNGWriter()
+            writer.SetFileName(str(path))
+            writer.SetInputConnection(w2i.GetOutputPort())
+            writer.Write()
+            return True
+        except Exception:
+            return False
+

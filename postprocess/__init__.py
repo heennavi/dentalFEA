@@ -24,6 +24,14 @@ from .vtk_builder import (
     attach_results,
     surface_of,
     set_deform_scale,
+    write_vtu,
+)
+from .exporters import (
+    export_nodal_csv,
+    export_stats_csv,
+    export_stats_json,
+    save_result_bundle,
+    load_result_bundle,
 )
 
 __all__ = [
@@ -41,4 +49,11 @@ __all__ = [
     "attach_results",
     "surface_of",
     "set_deform_scale",
+    "write_vtu",
+    "export_nodal_csv",
+    "export_stats_csv",
+    "export_stats_json",
+    "save_result_bundle",
+    "load_result_bundle",
 ]
+

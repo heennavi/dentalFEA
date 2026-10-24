@@ -265,3 +265,18 @@ def surface_of(grid: vtk.vtkUnstructuredGrid) -> vtk.vtkPolyData:
     geo_filter.SetInputData(grid)
     geo_filter.Update()
     return geo_filter.GetOutput()
+
+
+def write_vtu(grid: vtk.vtkUnstructuredGrid, path: str) -> None:
+    """
+    Write a vtkUnstructuredGrid to a .vtu XML file.
+
+    Args:
+        grid: vtkUnstructuredGrid with points, cells, and field data.
+        path: Output file path (.vtu).
+    """
+    writer = vtk.vtkXMLUnstructuredGridWriter()
+    writer.SetFileName(str(path))
+    writer.SetInputData(grid)
+    writer.Write()
+
