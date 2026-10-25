@@ -30,6 +30,15 @@ from .sn_curve import (
     interpolate_sn_life,
     calculate_miner_damage,
 )
+from .evaluate import (
+    evaluate_fatigue,
+)
+from .io_frd import (
+    extract_stress_from_frd,
+    extract_cyclic_stresses_from_frd,
+    extract_cyclic_stresses_from_two_frds,
+    extract_cyclic_stresses_with_ratio,
+)
 
 __all__ = [
     # models
@@ -55,5 +64,13 @@ __all__ = [
     "calculate_basquin_life",
     "interpolate_sn_life",
     "calculate_miner_damage",
+    # evaluate
+    "evaluate_fatigue",
+    # io_frd
+    "extract_stress_from_frd",
+    "extract_cyclic_stresses_from_frd",
+    "extract_cyclic_stresses_from_two_frds",
+    "extract_cyclic_stresses_with_ratio",
 ]
+
 
