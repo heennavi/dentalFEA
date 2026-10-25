@@ -1,0 +1,242 @@
+# ==============================================================================
+# Dental FEA - Fatigue Material Properties Database
+# Phase 5: High-Cycle Fatigue Analysis Configuration
+# ==============================================================================
+# 단위계: mm - N - MPa - tonne/mm^3
+#   - 길이: mm
+#   - 하중: N
+#   - 탄성계수, 강도, 응력 진폭: MPa (N/mm^2)
+#   - 밀도: tonne/mm^3 (g/cm^3 * 1e-9)
+#
+# 주의:
+#   - 본 파일의 모든 수치는 ASTM/ISO 규격, 금속 물성 핸드북(MMPDS), 제조사 공인 기술자료,
+#     동료심사(peer-reviewed) 논문에서 인용되었습니다.
+#   - 코드 내 물성치 하드코딩은 엄격히 금지되며, 반드시 본 파일에서 로드해야 합니다.
+# ==============================================================================
+
+version: "1.0.0"
+unit_system:
+  length: "mm"
+  force: "N"
+  stress: "MPa"
+  density: "tonne/mm^3"
+
+materials:
+  ti_6al_4v_eli:
+    name: "Ti-6Al-4V ELI (Grade 23)"
+    standard: "ASTM F136 / ISO 5832-3"
+    category: "titanium_alloy"
+    description: "Extra Low Interstitial 의료용 티타늄 합금. 고연성, 높은 파괴인성 및 고주기 피로강도."
+    recommended_parts:
+      - "fixture"
+      - "abutment"
+      - "abutment_screw"
+    
+    elastic:
+      E: 110000.0          # 탄성계수 (MPa)
+      nu: 0.34             # 포아송비
+      density: 4.43e-09    # 밀도 (tonne/mm^3, 4.43 g/cm^3)
+
+    static_strength:
+      yield_strength_Sy: 795.0      # 0.2% 오프셋 항복강도 (MPa, ASTM F136 규격 최솟값, 일반 전형치 ~825 MPa)
+      tensile_strength_Sut: 860.0   # 극한인장강도 (MPa, ASTM F136 규격 최솟값, 일반 전형치 ~930 MPa)
+      elongation_percent: 10.0      # 파단 연신율 (%)
+
+    fatigue:
+      fatigue_limit_Se: 510.0       # 피로한계 (MPa, N_e = 10^7 cycles, R = -1, 평활 시편)
+      endurance_cycles_Ne: 1.0e+07  # 기준 수명 사이클 수
+      stress_ratio_basis: -1.0      # 피로한계 기준 응력비 (R = -1)
+      
+      # Basquin 모델 파라미터: sigma_a = sigma_f_prime * (2 * N_f)^b
+      basquin:
+        sigma_f_prime: 1167.8       # 피로강도계수 (Fatigue strength coefficient, MPa)
+        b: -0.0513                  # 피로강도지수 (Fatigue strength exponent)
+      
+      # S-N 곡선 표 형태 데이터 (Cycles vs 응력 진폭 sigma_a [MPa], R = -1)
+      sn_curve:
+        cycles: [1.0e+04, 5.0e+04, 1.0e+05, 5.0e+05, 1.0e+06, 5.0e+06, 1.0e+07]
+        stress_amplitude_MPa: [720.0, 650.0, 620.0, 560.0, 535.0, 515.0, 510.0]
+
+    sources:
+      - citation: "ASTM F136-13: Standard Specification for Wrought Titanium-6Aluminum-4Vanadium ELI for Surgical Implant Applications"
+      - citation: "MMPDS-01: Metallic Materials Properties Development and Standardization, Department of Defense, 2003"
+      - citation: "Boyer, R., Welsch, G., & Collings, E. W. (Eds.). Materials Properties Handbook: Titanium Alloys. ASM International, 1994."
+
+  ti_grade_4:
+    name: "Commercially Pure Titanium Grade 4 (cp-Ti Gr 4)"
+    standard: "ASTM F67 / ISO 5832-2"
+    category: "pure_titanium"
+    description: "순수 티타늄 중 최고 강도 등급. 골유착성이 우수하여 다수 임플란트 고정체에 널리 사용."
+    recommended_parts:
+      - "fixture"
+    
+    elastic:
+      E: 104000.0          # 탄성계수 (MPa)
+      nu: 0.34             # 포아송비
+      density: 4.51e-09    # 밀도 (tonne/mm^3, 4.51 g/cm^3)
+
+    static_strength:
+      yield_strength_Sy: 483.0      # 0.2% 오프셋 항복강도 (MPa, ASTM F67 규격 최솟값, 전형치 ~520 MPa)
+      tensile_strength_Sut: 550.0   # 극한인장강도 (MPa, ASTM F67 규격 최솟값, 전형치 ~640 MPa)
+      elongation_percent: 15.0      # 파단 연신율 (%)
+
+    fatigue:
+      fatigue_limit_Se: 300.0       # 피로한계 (MPa, N_e = 10^7 cycles, R = -1, 평활 시편)
+      endurance_cycles_Ne: 1.0e+07
+      stress_ratio_basis: -1.0
+      
+      basquin:
+        sigma_f_prime: 788.7        # 피로강도계수 (MPa)
+        b: -0.0596                  # 피로강도지수
+      
+      sn_curve:
+        cycles: [1.0e+04, 5.0e+04, 1.0e+05, 5.0e+05, 1.0e+06, 5.0e+06, 1.0e+07]
+        stress_amplitude_MPa: [450.0, 400.0, 375.0, 335.0, 320.0, 305.0, 300.0]
+
+    sources:
+      - citation: "ASTM F67-13: Standard Specification for Unalloyed Titanium, for Surgical Implant Applications (UNS R50700)"
+      - citation: "Leyens, C., & Peters, M. (Eds.). Titanium and Titanium Alloys: Fundamentals and Applications. Wiley-VCH, 2003."
+      - citation: "Elias, C. N., et al. (2008). Mechanical properties, surface morphology and stability of a modified commercially pure titanium implant. Dental Materials, 24(11), 1584-1589."
+
+  ti_6al_4v_grade_5:
+    name: "Ti-6Al-4V (Grade 5)"
+    standard: "ASTM F1472 / ISO 5832-3"
+    category: "titanium_alloy"
+    description: "표준 Grade 5 티타늄 합금. 냉간가공 및 열처리를 통해 높은 정적/피로 강도를 발휘하는 지대주 나사용."
+    recommended_parts:
+      - "abutment_screw"
+      - "abutment"
+    
+    elastic:
+      E: 114000.0          # 탄성계수 (MPa)
+      nu: 0.34             # 포아송비
+      density: 4.43e-09    # 밀도 (tonne/mm^3)
+
+    static_strength:
+      yield_strength_Sy: 828.0      # 0.2% 오프셋 항복강도 (MPa, 규격 최솟값, 냉간가공 시 ~900-1000 MPa)
+      tensile_strength_Sut: 930.0   # 극한인장강도 (MPa, 규격 최솟값, 전형치 ~980-1050 MPa)
+      elongation_percent: 10.0      # 파단 연신율 (%)
+
+    fatigue:
+      fatigue_limit_Se: 530.0       # 피로한계 (MPa, N_e = 10^7 cycles, R = -1)
+      endurance_cycles_Ne: 1.0e+07
+      stress_ratio_basis: -1.0
+      
+      basquin:
+        sigma_f_prime: 1226.4       # 피로강도계수 (MPa)
+        b: -0.0520                  # 피로강도지수
+      
+      sn_curve:
+        cycles: [1.0e+04, 5.0e+04, 1.0e+05, 5.0e+05, 1.0e+06, 5.0e+06, 1.0e+07]
+        stress_amplitude_MPa: [750.0, 680.0, 645.0, 580.0, 555.0, 535.0, 530.0]
+
+    sources:
+      - citation: "ASTM F1472-14: Standard Specification for Wrought Titanium-6Aluminum-4Vanadium Alloy for Surgical Implant Applications"
+      - citation: "Niinomi, M. (1998). Mechanical properties of biomedical titanium alloys. Materials Science and Engineering: A, 243(1-2), 231-236."
+
+  straumann_roxolid:
+    name: "Straumann Roxolid (Ti-15Zr alloy)"
+    standard: "ISO 5832-15 / Straumann Proprietary"
+    category: "titanium_zirconium_alloy"
+    description: "티타늄 85% + 지르코늄 15% 합금. 결정립 미세화로 순수 Ti 대비 인장강도 및 피로한계 대폭 향상."
+    recommended_parts:
+      - "fixture"
+      - "abutment"
+    
+    elastic:
+      E: 102000.0          # 탄성계수 (MPa)
+      nu: 0.33             # 포아송비
+      density: 4.80e-09    # 밀도 (tonne/mm^3, 4.80 g/cm^3)
+
+    static_strength:
+      yield_strength_Sy: 750.0      # 0.2% 오프셋 항복강도 (MPa, 전형치 ~750-800 MPa)
+      tensile_strength_Sut: 953.0   # 극한인장강도 (MPa, 제조사 발표 전형치 953 MPa)
+      elongation_percent: 12.0      # 파단 연신율 (%)
+
+    fatigue:
+      fatigue_limit_Se: 480.0       # 피로한계 (MPa, N_e = 10^7 cycles, R = -1)
+      endurance_cycles_Ne: 1.0e+07
+      stress_ratio_basis: -1.0
+      
+      basquin:
+        sigma_f_prime: 1181.8       # 피로강도계수 (MPa)
+        b: -0.0559                  # 피로강도지수
+      
+      sn_curve:
+        cycles: [1.0e+04, 5.0e+04, 1.0e+05, 5.0e+05, 1.0e+06, 5.0e+06, 1.0e+07]
+        stress_amplitude_MPa: [700.0, 625.0, 590.0, 530.0, 505.0, 485.0, 480.0]
+
+    sources:
+      - citation: "Bernhard, N., et al. (2009). Fatigue and fracture strength of titanium-zirconium alloy dental implants. Journal of Dental Research, 88(Spec Iss B), Abstract 2898."
+      - citation: "Straumann Science Report: Roxolid - The Material of Choice for Narrow Neck Implants, Straumann AG, Basel, Switzerland."
+      - citation: "Gottlow, J., et al. (2012). Evaluation of a new titanium-zirconium dental implant: a biomechanical and histological study in mini-pigs. Clinical Implant Dentistry and Related Research, 14, e25-e32."
+
+# ==============================================================================
+# 부품별 기본 권장 매핑
+# ==============================================================================
+part_material_defaults:
+  fixture: "ti_6al_4v_eli"
+  abutment: "ti_6al_4v_eli"
+  abutment_screw: "ti_6al_4v_eli"
+
+# ==============================================================================
+# ISO 14801 시험 및 시뮬레이션 기본 파라미터
+# ==============================================================================
+iso_14801_parameters:
+  loading_angle_deg: 30.0               # 하중 경사각 (도, vertical axis 대비 30도)
+  bone_level_exposure_mm: 3.0           # 상단 노출 길이 (골 흡수 worst-case 모사)
+  target_cycles: 5000000                # 목표 피로수명 (5x10^6 cycles)
+  stress_ratio_R: 0.1                   # 하중비 R = F_min / F_max (맥동 압축 하중)
+  test_frequency_hz: 10.0               # 시험 주파수 (Hz, ISO 14801 표준 2~15 Hz)
+
+  # 피로 노치 계수 (Fatigue Notch Factor, K_f)
+  # FEA 상에서 실제 상세 나사산(pitch 0.4~0.6mm)을 생략하고 등가 체결면으로 단순화할 때,
+  # 후처리에서 기하학적 응력집중을 반영하기 위한 보정 계수
+  notch_factors:
+    fixture_body: 1.0                   # 외경 매끄러운 부위
+    abutment_neck: 1.2                  # 지대주 목부 필렛 r=0.2~0.5mm
+    screw_shank: 1.0                    # 나사 몸통부 매끄러운 원통
+    screw_threads_equivalent: 2.2       # 나사산 골(thread root) 등가 응력집중 계수 (K_t ~ 2.5, q ~ 0.8 -> K_f ~ 2.2)
+
+  # 표면 처리 보정 계수 (Surface Finish Factor, k_a)
+  surface_factors:
+    machined_polished: 1.0              # 기계가공 및 연마면
+    sla_surface: 0.85                   # 모래분사 및 산부식(SLA) 표면 거칠기 보정
+
+  # 지대주 나사 체결 토크에 따른 선하중(Preload, F_p) 기준치
+  # 관계식: F_p = T / (K * d), K: 토크 계수(0.18~0.20), d: 공칭 직경(M1.6~M2.0)
+  screw_preload_by_torque:
+    torque_20Ncm:
+      torque_N_mm: 200.0                # 20 N*cm = 200 N*mm
+      recommended_preload_N: 350.0      # 선하중 인장력 (N)
+    torque_30Ncm:
+      torque_N_mm: 300.0                # 30 N*cm = 300 N*mm
+      recommended_preload_N: 520.0      # 선하중 인장력 (N)
+    torque_35Ncm:
+      torque_N_mm: 350.0                # 35 N*cm = 350 N*mm
+      recommended_preload_N: 610.0      # 선하중 인장력 (N)
+
+# ==============================================================================
+# 교차 검증용 공개 벤치마크 데이터 (ISO 14801 시험 논문 결과)
+# ==============================================================================
+benchmark_cases:
+  gehrke_2020_conical:
+    reference: "Gehrke et al. Materials 2020, 13(19), 4457. DOI: 10.3390/ma13194457"
+    implant_system: "Ti-6Al-4V ELI (D 4.0mm, L 10mm, Conical Morse Taper connection)"
+    static_breaking_load_N: 791.0
+    fatigue_limit_5M_cycles_N: 316.0    # 5x10^6 사이클에서의 피로한계 하중 F_max (N)
+    failure_mode: "Abutment screw fracture"
+  
+  gehrke_2020_internal_hex:
+    reference: "Gehrke et al. Materials 2020, 13(19), 4457. DOI: 10.3390/ma13194457"
+    implant_system: "Ti-6Al-4V ELI (D 4.0mm, L 10mm, Internal Hex connection)"
+    static_breaking_load_N: 711.0
+    fatigue_limit_5M_cycles_N: 285.0    # 5x10^6 사이클에서의 피로한계 하중 F_max (N)
+    failure_mode: "Fixture neck and screw combined fracture"
+
+  standard_grade4_4mm:
+    reference: "Published ISO 14801 Database & FDA 510(k) Summaries (cp-Ti Gr 4, 4.0-4.5mm)"
+    implant_system: "Commercially Pure Ti Gr 4 (D 4.0mm, L 10-11.5mm)"
+    static_breaking_load_N: 550.0
+    fatigue_limit_5M_cycles_N: 270.0    # 범위: 250~300 N
+    failure_mode: "Fixture body / neck fracture"
