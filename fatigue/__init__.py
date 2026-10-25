@@ -63,6 +63,17 @@ from .notch_benchmark import (
     build_notch_model_and_bc,
     run_notch_benchmark,
 )
+from .preload_contact import (
+    PreloadContactConfig,
+    PreloadContactResult,
+    SimplifiedModelResult,
+    ModelComparisonReport,
+    build_benchmark_assembly,
+    write_preload_contact_deck,
+    run_preload_contact_analysis,
+    run_simplified_model_analysis,
+    compare_simplified_vs_detailed,
+)
 
 __all__ = [
     # models
@@ -115,6 +126,16 @@ __all__ = [
     "build_notched_plate_mesh",
     "build_notch_model_and_bc",
     "run_notch_benchmark",
+    # preload_contact
+    "PreloadContactConfig",
+    "PreloadContactResult",
+    "SimplifiedModelResult",
+    "ModelComparisonReport",
+    "build_benchmark_assembly",
+    "write_preload_contact_deck",
+    "run_preload_contact_analysis",
+    "run_simplified_model_analysis",
+    "compare_simplified_vs_detailed",
 ]
 
 
