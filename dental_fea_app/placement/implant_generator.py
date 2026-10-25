@@ -31,6 +31,73 @@ class ImplantSpec:
     file_name: str = ""
 
 
+@dataclass
+class ScrewSpec:
+    """치과 어버트먼트 스크류(Abutment Screw) 규격 사양"""
+    thread_name: str = "M1.8"           # M1.6, M1.8, M2.0
+    thread_major_mm: float = 1.80       # 나사 외경
+    thread_pitch_mm: float = 0.35       # 나사 피치
+    head_diameter_mm: float = 2.20      # 스크류 헤드 외경
+    head_length_mm: float = 1.80        # 스크류 헤드 길이
+    driver_hex_mm: float = 1.25         # 내부 헥스 드라이버 홈 크기 (대변거리)
+    shaft_diameter_mm: float = 1.60     # 중간 샤프트 외경
+    total_length_mm: float = 7.10       # 전체 길이
+    thread_length_mm: float = 3.00      # 결합 나사산 길이
+    seat_z_offset_mm: float = 0.80      # Abutment 내부 턱 안착 높이 (Abutment 로컬 z 좌표)
+    color_rgb: Tuple[float, float, float] = (0.78, 0.80, 0.83) # 티타늄 메탈릭 실버
+
+
+def get_screw_hole_params(implant_diameter: float, implant_length: float) -> Dict[str, Any]:
+    """임플란트 직경과 길이에 따른 표준 내부 헥사 및 암나사 스크류홀 규격 반환"""
+    d = float(implant_diameter)
+    l = float(implant_length)
+
+    if d < 3.4:
+        hex_across_flats = 2.10
+        thread_name = "M1.6"
+        thread_pitch = 0.35
+        thread_minor_r = 1.22 / 2.0  # 0.61 mm
+        thread_major_r = 1.60 / 2.0  # 0.80 mm
+        head_diam = 2.00
+    elif d < 4.4:
+        hex_across_flats = 2.44
+        thread_name = "M1.8"
+        thread_pitch = 0.35
+        thread_minor_r = 1.42 / 2.0  # 0.71 mm
+        thread_major_r = 1.80 / 2.0  # 0.90 mm
+        head_diam = 2.20
+    else:
+        hex_across_flats = 2.50
+        thread_name = "M2.0"
+        thread_pitch = 0.40
+        thread_minor_r = 1.57 / 2.0  # 0.785 mm
+        thread_major_r = 2.00 / 2.0  # 1.00 mm
+        head_diam = 2.30
+
+    hex_depth = 1.50
+    # 최소 유효 결합 길이 1.8mm, 권장 2.5~3.5mm
+    thread_len = max(1.8, min(3.5, l * 0.45 - hex_depth))
+
+    return {
+        "hex_across_flats": hex_across_flats,
+        "hex_depth": hex_depth,
+        "thread_name": thread_name,
+        "thread_pitch": thread_pitch,
+        "thread_minor_r": thread_minor_r,
+        "thread_major_r": thread_major_r,
+        "thread_len": thread_len,
+        "head_diam": head_diam,
+    }
+
+
+def get_hex_radius_at_angle(angle: float, across_flats: float) -> float:
+    """정육각형의 중심에서 특정 각도(angle, rad) 방향 변까지의 거리(반지름) 반환"""
+    half_flat = float(across_flats) / 2.0
+    seg = math.pi / 3.0
+    mod_ang = ((angle + (math.pi / 6.0)) % seg) - (math.pi / 6.0)
+    return half_flat / max(1e-4, math.cos(mod_ang))
+
+
 class AbutmentSpec:
     """치과 어버트먼트(지대주) 규격 사양"""
     def __init__(
@@ -256,24 +323,76 @@ class Implant3DGenerator:
                 ring_pt_ids.append(pid)
             outer_ring_point_indices.append(ring_pt_ids)
 
-        inner_z_levels = [
-            length,
-            length - 0.2 * hole_depth,
-            length - 0.8 * hole_depth,
-            hole_bottom_z
-        ]
-        inner_ring_point_indices = []
-        for z in inner_z_levels:
-            ring_pt_ids = []
-            for j in range(n_radial):
-                angle = 2.0 * math.pi * j / float(n_radial)
-                x = hole_radius * math.cos(angle)
-                y = hole_radius * math.sin(angle)
-                pid = points.InsertNextPoint(x, y, z)
-                ring_pt_ids.append(pid)
-            inner_ring_point_indices.append(ring_pt_ids)
+        # 규격 스크류 홀 파라미터 (내부 헥사 + 암나사)
+        hole_params = get_screw_hole_params(diameter, length)
+        hex_af = hole_params["hex_across_flats"]
+        hex_depth = hole_params["hex_depth"] # 1.5mm
+        t_pitch = hole_params["thread_pitch"]
+        t_minor_r = hole_params["thread_minor_r"]
+        t_major_r = hole_params["thread_major_r"]
+        t_len = hole_params["thread_len"]
 
-        hole_bottom_center_idx = points.InsertNextPoint(0.0, 0.0, hole_bottom_z)
+        # 홀 내부 Z 레벨 및 프로파일 정의
+        hole_bottom_z = length - 1.65 - t_len
+        n_thread_steps = max(8, int(t_len / max(0.1, t_pitch) * 2))
+
+        inner_ring_point_indices = []
+
+        # 1. 상단 리드인 챔퍼 입구 (z = length)
+        ring_0 = []
+        for j in range(n_radial):
+            ang = 2.0 * math.pi * j / float(n_radial)
+            r = get_hex_radius_at_angle(ang, hex_af) + 0.15
+            ring_0.append(points.InsertNextPoint(r * math.cos(ang), r * math.sin(ang), length))
+        inner_ring_point_indices.append(ring_0)
+
+        # 2. 내부 헥사 상단 (z = length - 0.2, 45도 리드인 챔퍼 바닥)
+        ring_hex_top = []
+        for j in range(n_radial):
+            ang = 2.0 * math.pi * j / float(n_radial)
+            r = get_hex_radius_at_angle(ang, hex_af)
+            ring_hex_top.append(points.InsertNextPoint(r * math.cos(ang), r * math.sin(ang), length - 0.2))
+        inner_ring_point_indices.append(ring_hex_top)
+
+        # 3. 내부 헥사 중단 (z = length - 0.8)
+        ring_hex_mid = []
+        for j in range(n_radial):
+            ang = 2.0 * math.pi * j / float(n_radial)
+            r = get_hex_radius_at_angle(ang, hex_af)
+            ring_hex_mid.append(points.InsertNextPoint(r * math.cos(ang), r * math.sin(ang), length - 0.8))
+        inner_ring_point_indices.append(ring_hex_mid)
+
+        # 4. 내부 헥사 하단 (z = length - 1.5, 헥사 깊이 1.5mm)
+        ring_hex_bot = []
+        for j in range(n_radial):
+            ang = 2.0 * math.pi * j / float(n_radial)
+            r = get_hex_radius_at_angle(ang, hex_af)
+            ring_hex_bot.append(points.InsertNextPoint(r * math.cos(ang), r * math.sin(ang), length - hex_depth))
+        inner_ring_point_indices.append(ring_hex_bot)
+
+        # 5. 암나사 전이부 입구 (z = length - 1.65)
+        ring_trans = []
+        for j in range(n_radial):
+            ang = 2.0 * math.pi * j / float(n_radial)
+            ring_trans.append(points.InsertNextPoint(t_major_r * math.cos(ang), t_major_r * math.sin(ang), length - 1.65))
+        inner_ring_point_indices.append(ring_trans)
+
+        # 6. 암나사 나선부 (z = length - 1.65 ~ hole_bottom_z)
+        for s in range(1, n_thread_steps + 1):
+            t_frac = s / float(n_thread_steps)
+            z_curr = (length - 1.65) - t_frac * t_len
+            ring_thread = []
+            phase = ((length - 1.65 - z_curr) / t_pitch) % 1.0
+            for j in range(n_radial):
+                ang = 2.0 * math.pi * j / float(n_radial)
+                # 나선형 나사산 형성
+                thread_wave = 0.5 * (1.0 + math.sin(2.0 * math.pi * (phase + j / float(n_radial))))
+                r = t_minor_r + (t_major_r - t_minor_r) * thread_wave
+                ring_thread.append(points.InsertNextPoint(r * math.cos(ang), r * math.sin(ang), z_curr))
+            inner_ring_point_indices.append(ring_thread)
+
+        # 7. 바닥 테이퍼 드릴 팁
+        hole_bottom_center_idx = points.InsertNextPoint(0.0, 0.0, hole_bottom_z - 0.4 * t_minor_r)
 
         top_outer_ring = outer_ring_point_indices[0]
         top_inner_ring = inner_ring_point_indices[0]
@@ -384,8 +503,11 @@ def generate_abutment_polydata(
     implant_spec: Optional[ImplantSpec] = None,
 ) -> vtk.vtkPolyData:
     """
-    치과 어버트먼트 3D 메쉬 생성 (임플란트 홀 맞춤 Hex 돌기, Collar, Morse Taper 상부).
-    임플란트 홀에 최적화된 하부 돌출부와 자가교차 없는 완전한 닫힌 2-매니폴드 표면을 생성합니다.
+    치과 어버트먼트 3D 메쉬 생성.
+    - 하부: 임플란트 내부 헥사에 정밀 대응하는 수(Male) 헥사 돌출부 (결합 높이 1.5mm, across flats 2.44mm)
+    - 외측: Collar(플레어 원추대) 및 Morse Taper 상부 기둥
+    - 내부: 스크류 체결 채널 및 스크류 헤드 안착용 내부 턱(Shoulder / Seat) 구조 구비
+    - 상하 관통 닫힌 2-매니폴드(watertight) 표면 형성
     """
     diameter_mm = float(spec.diameter_mm)
     flare_deg = float(spec.flare_deg)
@@ -401,17 +523,23 @@ def generate_abutment_polydata(
     taper_rad = math.radians(2.0)
     r_upper_top = max(0.5, r_upper_bottom - upper_len_mm * math.tan(taper_rad))
 
-    # 임플란트 홀에 맞춘 Hex 하부 돌출부 크기 및 깊이 자동 변형
+    # Fixture 내부 헥사 규격에 맞춘 수 헥사 규격 (공차 0.02mm 적용)
     if implant_spec is not None:
-        hex_r = float(implant_spec.diameter_mm) * 0.30
-        hex_depth = min(2.5, float(implant_spec.length_mm) * 0.35)
+        hole_params = get_screw_hole_params(implant_spec.diameter_mm, implant_spec.length_mm)
+        male_hex_af = hole_params["hex_across_flats"] - 0.02
+        hex_depth = hole_params["hex_depth"] # 1.5mm
     else:
-        hex_r = min(1.2, r_bottom * 0.60)
-        hex_depth = float(spec.hex_height_mm) if getattr(spec, "hex_height_mm", 0) > 0.5 else 2.5
+        male_hex_af = 2.42
+        hex_depth = 1.50
+
+    # 스크류 채널 규격: 상부 헤드 채널 및 내부 턱, 하부 관통 홀
+    seat_z = 0.80 # Collar 하단 내부 턱 높이
+    r_ch_head = min(1.15, max(0.8, r_upper_top - 0.35)) # 헤드 통과 반경 (직경 약 2.2~2.3mm)
+    r_ch_shaft = 0.90 # 샤프트 관통 반경 (직경 1.8mm, M1.6/M1.8 스크류 샤프트 무간섭 통과)
 
     points = vtk.vtkPoints()
     polys = vtk.vtkCellArray()
-    n_radial = 36
+    n_radial = 48 # 6의 배수로 헥사와 원형 단면이 1:1 완벽 정렬
 
     def add_quad(p1, p2, p3, p4):
         tri1 = vtk.vtkTriangle()
@@ -433,111 +561,342 @@ def generate_abutment_polydata(
         tri.GetPointIds().SetId(2, p3)
         polys.InsertNextCell(tri)
 
-    # 1. Hex 하부 돌출부 바닥 캡 및 측면 기둥 (z = -hex_depth ~ 0.0)
-    hex_bottom_pts = []
-    hex_top_pts = []
-    for i in range(6):
-        ang = i * (2.0 * math.pi / 6.0)
-        hex_bottom_pts.append(points.InsertNextPoint(hex_r * math.cos(ang), hex_r * math.sin(ang), -hex_depth))
-        hex_top_pts.append(points.InsertNextPoint(hex_r * math.cos(ang), hex_r * math.sin(ang), 0.0))
+    # ==========================================================
+    # 1. 외벽 링 생성 (Outer Surface)
+    # ==========================================================
+    outer_rings = []
 
-    hex_bottom_center = points.InsertNextPoint(0.0, 0.0, -hex_depth)
-    for i in range(6):
-        inxt = (i + 1) % 6
-        # 바닥면 법선: -Z 방향
-        add_tri(hex_bottom_center, hex_bottom_pts[inxt], hex_bottom_pts[i])
-        # 기둥 옆면: 외측 방향 법선
-        add_quad(hex_bottom_pts[i], hex_bottom_pts[inxt], hex_top_pts[inxt], hex_top_pts[i])
+    # 1-1. 수 헥사 바닥 (z = -hex_depth) 및 상단 (z = 0.0)
+    hex_bot_ring = []
+    hex_top_ring = []
+    for j in range(n_radial):
+        ang = 2.0 * math.pi * j / float(n_radial)
+        r = get_hex_radius_at_angle(ang, male_hex_af)
+        hex_bot_ring.append(points.InsertNextPoint(r * math.cos(ang), r * math.sin(ang), -hex_depth))
+        hex_top_ring.append(points.InsertNextPoint(r * math.cos(ang), r * math.sin(ang), 0.0))
+    outer_rings.append(hex_bot_ring)
+    outer_rings.append(hex_top_ring)
 
-    # 2. Collar (z = 0.0 ~ collar_len_mm)
-    n_collar_steps = max(6, int(collar_len_mm * 2))
-    collar_rings = []
-    for s in range(n_collar_steps + 1):
+    # 1-2. Collar 바닥 (z = 0.0, 외경 r_bottom)
+    # 수 헥사 외경과 Collar 바닥 사이의 수평 환형 림(Shoulder) 형성용 링
+    collar_bot_ring = []
+    for j in range(n_radial):
+        ang = 2.0 * math.pi * j / float(n_radial)
+        collar_bot_ring.append(points.InsertNextPoint(r_bottom * math.cos(ang), r_bottom * math.sin(ang), 0.0))
+    outer_rings.append(collar_bot_ring)
+
+    # 1-3. Collar 상승 구간 (z = 0.0 ~ collar_len_mm)
+    n_collar_steps = max(4, int(collar_len_mm * 2))
+    for s in range(1, n_collar_steps + 1):
         t = s / float(n_collar_steps)
         cz = t * collar_len_mm
         cr = r_bottom + cz * math.tan(flare_rad)
-        ring = []
+        c_ring = []
         for j in range(n_radial):
-            ang = j * (2.0 * math.pi / float(n_radial))
-            ring.append(points.InsertNextPoint(cr * math.cos(ang), cr * math.sin(ang), cz))
-        collar_rings.append(ring)
+            ang = 2.0 * math.pi * j / float(n_radial)
+            c_ring.append(points.InsertNextPoint(cr * math.cos(ang), cr * math.sin(ang), cz))
+        outer_rings.append(c_ring)
 
-    base_ring = collar_rings[0]
-
-    # Hex 상단(6정점)과 Collar 바닥 원주(36정점) 간의 일체형 환형 전이면(Annular Transition)
-    for i in range(6):
-        h0 = hex_top_pts[i]
-        h1 = hex_top_pts[(i + 1) % 6]
-        j_start = i * 6
-        for k in range(6):
-            b0 = base_ring[(j_start + k) % n_radial]
-            b1 = base_ring[(j_start + k + 1) % n_radial]
-            if k < 3:
-                add_tri(h0, b1, b0)
-            elif k == 3:
-                add_tri(h0, b1, b0)
-                add_tri(h0, h1, b1)
-            else:
-                add_tri(h1, b1, b0)
-
-    # Collar 옆면 쿼드
-    for s in range(len(collar_rings) - 1):
-        r1 = collar_rings[s]
-        r2 = collar_rings[s + 1]
-        for j in range(n_radial):
-            jnxt = (j + 1) % n_radial
-            add_quad(r1[j], r1[jnxt], r2[jnxt], r2[j])
-
-    # 3. Upper Post (지대주 상부 기둥)
+    # 1-4. Upper Post 기둥 (z = collar_len_mm ~ collar_len_mm + upper_len_mm)
     rot_trans = vtk.vtkTransform()
     rot_trans.Identity()
     rot_trans.RotateZ(upper_dir_deg)
     rot_trans.RotateX(upper_angle_deg)
     rot_trans.RotateZ(-upper_dir_deg)
 
+    # Collar 상단에서 Upper 기둥 기저부로의 연결 링 (r_upper_bottom)
+    upper_base_ring = []
+    for j in range(n_radial):
+        ang = 2.0 * math.pi * j / float(n_radial)
+        upper_base_ring.append(points.InsertNextPoint(r_upper_bottom * math.cos(ang), r_upper_bottom * math.sin(ang), collar_len_mm))
+    outer_rings.append(upper_base_ring)
+
     n_upper_steps = max(6, int(upper_len_mm * 2))
-    upper_rings = []
-    for s in range(n_upper_steps + 1):
+    for s in range(1, n_upper_steps + 1):
         t = s / float(n_upper_steps)
         uz_local = t * upper_len_mm
         ur = r_upper_bottom - uz_local * math.tan(taper_rad)
-        ring = []
+        u_ring = []
         for j in range(n_radial):
-            ang = j * (2.0 * math.pi / float(n_radial))
+            ang = 2.0 * math.pi * j / float(n_radial)
             lx = ur * math.cos(ang)
             ly = ur * math.sin(ang)
             lz = uz_local
             wx, wy, wz = rot_trans.TransformPoint(lx, ly, lz)
-            ring.append(points.InsertNextPoint(wx, wy, collar_len_mm + wz))
-        upper_rings.append(ring)
+            u_ring.append(points.InsertNextPoint(wx, wy, collar_len_mm + wz))
+        outer_rings.append(u_ring)
 
-    collar_top = collar_rings[-1]
-    upper_bot = upper_rings[0]
-    for j in range(n_radial):
-        jnxt = (j + 1) % n_radial
-        add_quad(collar_top[j], collar_top[jnxt], upper_bot[jnxt], upper_bot[j])
-
-    for s in range(len(upper_rings) - 1):
-        r1 = upper_rings[s]
-        r2 = upper_rings[s + 1]
+    # 외벽 쿼드 연결
+    for s in range(len(outer_rings) - 1):
+        r1 = outer_rings[s]
+        r2 = outer_rings[s + 1]
         for j in range(n_radial):
             jnxt = (j + 1) % n_radial
             add_quad(r1[j], r1[jnxt], r2[jnxt], r2[j])
 
-    # 4. Upper Post 상단 캡 (단일 폐곡면)
-    upper_top_ring = upper_rings[-1]
-    top_center_local = rot_trans.TransformPoint(0.0, 0.0, upper_len_mm)
-    top_center_pid = points.InsertNextPoint(top_center_local[0], top_center_local[1], collar_len_mm + top_center_local[2])
+    # ==========================================================
+    # 2. 내부 스크류 채널 및 내부 턱(Shoulder / Seat) 생성
+    # ==========================================================
+    inner_rings = []
+
+    # 2-1. 상단 스크류 채널 입구 링 (Upper post 상단 높이, 반경 r_ch_head)
+    ch_top_ring = []
+    for j in range(n_radial):
+        ang = 2.0 * math.pi * j / float(n_radial)
+        lx = r_ch_head * math.cos(ang)
+        ly = r_ch_head * math.sin(ang)
+        lz = upper_len_mm
+        wx, wy, wz = rot_trans.TransformPoint(lx, ly, lz)
+        ch_top_ring.append(points.InsertNextPoint(wx, wy, collar_len_mm + wz))
+    inner_rings.append(ch_top_ring)
+
+    # 2-2. Upper 기둥 하단 부근 스크류 채널
+    ch_mid_ring = []
+    for j in range(n_radial):
+        ang = 2.0 * math.pi * j / float(n_radial)
+        ch_mid_ring.append(points.InsertNextPoint(r_ch_head * math.cos(ang), r_ch_head * math.sin(ang), collar_len_mm))
+    inner_rings.append(ch_mid_ring)
+
+    # 2-3. 내부 안착 턱(Seat) 상단 (z = seat_z, 반경 r_ch_head)
+    seat_top_ring = []
+    for j in range(n_radial):
+        ang = 2.0 * math.pi * j / float(n_radial)
+        seat_top_ring.append(points.InsertNextPoint(r_ch_head * math.cos(ang), r_ch_head * math.sin(ang), seat_z))
+    inner_rings.append(seat_top_ring)
+
+    # 2-4. 내부 안착 턱(Seat) 하단 (z = seat_z, 반경 r_ch_shaft) -> 스크류 헤드 걸림 턱
+    seat_bot_ring = []
+    for j in range(n_radial):
+        ang = 2.0 * math.pi * j / float(n_radial)
+        seat_bot_ring.append(points.InsertNextPoint(r_ch_shaft * math.cos(ang), r_ch_shaft * math.sin(ang), seat_z))
+    inner_rings.append(seat_bot_ring)
+
+    # 2-5. 하부 관통 홀 중간 (z = 0.0, 반경 r_ch_shaft)
+    shaft_mid_ring = []
+    for j in range(n_radial):
+        ang = 2.0 * math.pi * j / float(n_radial)
+        shaft_mid_ring.append(points.InsertNextPoint(r_ch_shaft * math.cos(ang), r_ch_shaft * math.sin(ang), 0.0))
+    inner_rings.append(shaft_mid_ring)
+
+    # 2-6. 하부 관통 홀 바닥 (z = -hex_depth, 반경 r_ch_shaft)
+    shaft_bot_ring = []
+    for j in range(n_radial):
+        ang = 2.0 * math.pi * j / float(n_radial)
+        shaft_bot_ring.append(points.InsertNextPoint(r_ch_shaft * math.cos(ang), r_ch_shaft * math.sin(ang), -hex_depth))
+    inner_rings.append(shaft_bot_ring)
+
+    # 내벽 쿼드 연결 (법선이 솔리드 외측, 즉 중공 내부 중심을 향하도록 와인딩)
+    for s in range(len(inner_rings) - 1):
+        r1 = inner_rings[s]
+        r2 = inner_rings[s + 1]
+        for j in range(n_radial):
+            jnxt = (j + 1) % n_radial
+            add_quad(r1[jnxt], r1[j], r2[j], r2[jnxt])
+
+    # ==========================================================
+    # 3. 상단 및 하단 환형 캡 연결 (닫힌 솔리드 완성)
+    # ==========================================================
+    # 상단 캡: Upper post 상단 외경 링과 스크류 채널 상단 입구 링 연결 (+Z 방향 법선)
+    outer_top_ring = outer_rings[-1]
+    inner_top_ring = inner_rings[0]
     for j in range(n_radial):
         jnxt = (j + 1) % n_radial
-        add_tri(top_center_pid, upper_top_ring[j], upper_top_ring[jnxt])
+        add_quad(outer_top_ring[j], outer_top_ring[jnxt], inner_top_ring[jnxt], inner_top_ring[j])
+
+    # 하단 캡: 수 헥사 바닥 링과 하부 관통 홀 바닥 링 연결 (-Z 방향 법선)
+    outer_bot_ring = outer_rings[0]
+    inner_bot_ring = inner_rings[-1]
+    for j in range(n_radial):
+        jnxt = (j + 1) % n_radial
+        add_quad(inner_bot_ring[j], inner_bot_ring[jnxt], outer_bot_ring[jnxt], outer_bot_ring[j])
 
     polydata = vtk.vtkPolyData()
     polydata.SetPoints(points)
     polydata.SetPolys(polys)
 
+    cleaner = vtk.vtkCleanPolyData()
+    cleaner.SetInputData(polydata)
+    cleaner.Update()
+
     normals = vtk.vtkPolyDataNormals()
-    normals.SetInputData(polydata)
+    normals.SetInputConnection(cleaner.GetOutputPort())
+    normals.ComputePointNormalsOn()
+    normals.ConsistencyOn()
+    normals.AutoOrientNormalsOn()
+    normals.SplittingOff()
+    normals.Update()
+    return normals.GetOutput()
+
+
+def generate_screw_polydata(
+    spec: Optional[ScrewSpec] = None,
+    implant_spec: Optional[ImplantSpec] = None,
+    abutment_spec: Optional[AbutmentSpec] = None,
+) -> vtk.vtkPolyData:
+    """
+    치과 어버트먼트 스크류(Abutment Screw) 3D 메쉬 생성.
+    - 헤드: Abutment 내부 턱(Seat)에 밀착 안착, 상부에 1.25mm 헥스 드라이버 홈 구비
+    - 샤프트: Abutment 관통부를 지나 Fixture 스크류 홀로 진입
+    - 수나사산부: Fixture 암나사와 정확히 맞물려 체결
+    - Abutment 로컬 좌표계 기준으로 생성되어 Abutment 및 Fixture에 정확히 안착됨.
+    """
+    if spec is None:
+        if implant_spec is not None:
+            p = get_screw_hole_params(implant_spec.diameter_mm, implant_spec.length_mm)
+            spec = ScrewSpec(
+                thread_name=p["thread_name"],
+                thread_major_mm=p["thread_major_r"] * 2.0,
+                thread_pitch_mm=p["thread_pitch"],
+                head_diameter_mm=p["head_diam"],
+                thread_length_mm=p["thread_len"],
+            )
+        else:
+            spec = ScrewSpec()
+
+    seat_z = float(spec.seat_z_offset_mm) # 0.80 mm
+    head_len = float(spec.head_length_mm) # 1.80 mm
+    head_r = float(spec.head_diameter_mm) / 2.0 # 1.10 mm
+    shaft_r = float(spec.shaft_diameter_mm) / 2.0 # 0.80 mm
+    t_major_r = float(spec.thread_major_mm) / 2.0 # 0.90 mm
+    t_minor_r = max(0.5, t_major_r - 0.19)
+    t_pitch = float(spec.thread_pitch_mm) # 0.35 mm
+    t_len = float(spec.thread_length_mm) # 3.0 mm
+    driver_af = float(spec.driver_hex_mm) # 1.25 mm
+    driver_depth = 0.80 # mm
+
+    points = vtk.vtkPoints()
+    polys = vtk.vtkCellArray()
+    n_radial = 48
+
+    def add_quad(p1, p2, p3, p4):
+        tri1 = vtk.vtkTriangle()
+        tri1.GetPointIds().SetId(0, p1)
+        tri1.GetPointIds().SetId(1, p2)
+        tri1.GetPointIds().SetId(2, p3)
+        polys.InsertNextCell(tri1)
+
+        tri2 = vtk.vtkTriangle()
+        tri2.GetPointIds().SetId(0, p1)
+        tri2.GetPointIds().SetId(1, p3)
+        tri2.GetPointIds().SetId(2, p4)
+        polys.InsertNextCell(tri2)
+
+    def add_tri(p1, p2, p3):
+        tri = vtk.vtkTriangle()
+        tri.GetPointIds().SetId(0, p1)
+        tri.GetPointIds().SetId(1, p2)
+        tri.GetPointIds().SetId(2, p3)
+        polys.InsertNextCell(tri)
+
+    head_top_z = seat_z + head_len
+    driver_bot_z = head_top_z - driver_depth
+    screw_bot_z = -1.50 - t_len
+
+    # ==========================================================
+    # 1. 스크류 헤드 상단 헥스 드라이버 홈
+    # ==========================================================
+    # 1-1. 헤드 상단 외경 링 (z = head_top_z, 반경 head_r)
+    head_top_outer = []
+    for j in range(n_radial):
+        ang = 2.0 * math.pi * j / float(n_radial)
+        head_top_outer.append(points.InsertNextPoint(head_r * math.cos(ang), head_r * math.sin(ang), head_top_z))
+
+    # 1-2. 드라이버 홈 상단 링 (z = head_top_z, 헥스 반경)
+    driver_top_ring = []
+    for j in range(n_radial):
+        ang = 2.0 * math.pi * j / float(n_radial)
+        r = get_hex_radius_at_angle(ang, driver_af)
+        driver_top_ring.append(points.InsertNextPoint(r * math.cos(ang), r * math.sin(ang), head_top_z))
+
+    # 1-3. 드라이버 홈 바닥 링 (z = driver_bot_z, 헥스 반경)
+    driver_bot_ring = []
+    for j in range(n_radial):
+        ang = 2.0 * math.pi * j / float(n_radial)
+        r = get_hex_radius_at_angle(ang, driver_af)
+        driver_bot_ring.append(points.InsertNextPoint(r * math.cos(ang), r * math.sin(ang), driver_bot_z))
+
+    driver_bottom_center = points.InsertNextPoint(0.0, 0.0, driver_bot_z)
+
+    # 헤드 상단면 연결 (외경과 헥스 홈 사이 환형 상단면)
+    for j in range(n_radial):
+        jnxt = (j + 1) % n_radial
+        add_quad(head_top_outer[j], head_top_outer[jnxt], driver_top_ring[jnxt], driver_top_ring[j])
+
+    # 드라이버 홈 내벽 연결
+    for j in range(n_radial):
+        jnxt = (j + 1) % n_radial
+        add_quad(driver_top_ring[jnxt], driver_top_ring[j], driver_bot_ring[j], driver_bot_ring[jnxt])
+
+    # 드라이버 홈 바닥면 닫기
+    for j in range(n_radial):
+        jnxt = (j + 1) % n_radial
+        add_tri(driver_bottom_center, driver_bot_ring[jnxt], driver_bot_ring[j])
+
+    # ==========================================================
+    # 2. 스크류 외벽 기둥들 (헤드, 안착면, 샤프트, 수나사산)
+    # ==========================================================
+    body_rings = [head_top_outer]
+
+    # 2-1. 헤드 하단 링 (z = seat_z, 반경 head_r)
+    head_bot_ring = []
+    for j in range(n_radial):
+        ang = 2.0 * math.pi * j / float(n_radial)
+        head_bot_ring.append(points.InsertNextPoint(head_r * math.cos(ang), head_r * math.sin(ang), seat_z))
+    body_rings.append(head_bot_ring)
+
+    # 2-2. 안착면 림 (z = seat_z, 반경 shaft_r) -> Abutment 턱에 안착되는 환형 면
+    seat_rim_ring = []
+    for j in range(n_radial):
+        ang = 2.0 * math.pi * j / float(n_radial)
+        seat_rim_ring.append(points.InsertNextPoint(shaft_r * math.cos(ang), shaft_r * math.sin(ang), seat_z))
+    body_rings.append(seat_rim_ring)
+
+    # 2-3. 무나사 샤프트 하단 (z = -1.50, 반경 shaft_r)
+    shaft_bot_ring = []
+    for j in range(n_radial):
+        ang = 2.0 * math.pi * j / float(n_radial)
+        shaft_bot_ring.append(points.InsertNextPoint(shaft_r * math.cos(ang), shaft_r * math.sin(ang), -1.50))
+    body_rings.append(shaft_bot_ring)
+
+    # 2-4. 수나사산 구간 (z = -1.50 ~ screw_bot_z)
+    n_thread_steps = max(10, int(t_len / max(0.1, t_pitch) * 2))
+    for s in range(1, n_thread_steps + 1):
+        t_frac = s / float(n_thread_steps)
+        z_curr = -1.50 - t_frac * t_len
+        th_ring = []
+        phase = ((-1.50 - z_curr) / t_pitch) % 1.0
+        for j in range(n_radial):
+            ang = 2.0 * math.pi * j / float(n_radial)
+            thread_wave = 0.5 * (1.0 + math.sin(2.0 * math.pi * (phase + j / float(n_radial))))
+            r = t_minor_r + (t_major_r - t_minor_r) * thread_wave
+            th_ring.append(points.InsertNextPoint(r * math.cos(ang), r * math.sin(ang), z_curr))
+        body_rings.append(th_ring)
+
+    # 외벽 쿼드 연결
+    for s in range(len(body_rings) - 1):
+        r1 = body_rings[s]
+        r2 = body_rings[s + 1]
+        for j in range(n_radial):
+            jnxt = (j + 1) % n_radial
+            add_quad(r1[j], r1[jnxt], r2[jnxt], r2[j])
+
+    # 2-5. 스크류 바닥 캡
+    screw_bottom_center = points.InsertNextPoint(0.0, 0.0, screw_bot_z - 0.3 * t_minor_r)
+    last_ring = body_rings[-1]
+    for j in range(n_radial):
+        jnxt = (j + 1) % n_radial
+        add_tri(screw_bottom_center, last_ring[j], last_ring[jnxt])
+
+    polydata = vtk.vtkPolyData()
+    polydata.SetPoints(points)
+    polydata.SetPolys(polys)
+
+    cleaner = vtk.vtkCleanPolyData()
+    cleaner.SetInputData(polydata)
+    cleaner.Update()
+
+    normals = vtk.vtkPolyDataNormals()
+    normals.SetInputConnection(cleaner.GetOutputPort())
     normals.ComputePointNormalsOn()
     normals.ConsistencyOn()
     normals.AutoOrientNormalsOn()

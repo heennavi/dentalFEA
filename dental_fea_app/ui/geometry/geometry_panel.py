@@ -209,6 +209,12 @@ class GeometryPanel(QWidget):
         self.chk_abutment.toggled.connect(self._on_display_toggled)
         chk_layout.addWidget(self.chk_abutment)
 
+        self.chk_screw = QCheckBox("스크류 ■", self.group_vis)
+        self.chk_screw.setStyleSheet("color: #d1b87a; font-weight: bold; font-size: 11px;")
+        self.chk_screw.setChecked(True)
+        self.chk_screw.toggled.connect(self._on_display_toggled)
+        chk_layout.addWidget(self.chk_screw)
+
         self.chk_crown = QCheckBox("크라운 ■", self.group_vis)
         self.chk_crown.setStyleSheet("color: #c678dd; font-weight: bold; font-size: 11px;")
         self.chk_crown.setChecked(True)
@@ -419,12 +425,14 @@ class GeometryPanel(QWidget):
         cn_wt = rep.get("cancellous_watertight", False)
         i_wt = rep.get("implant_watertight", False)
         a_wt = rep.get("abutment_watertight", False)
+        sc_wt = rep.get("screw_watertight", False)
         cr_wt = rep.get("crown_watertight", False)
 
         c_wt_html = "<span style='color:#98c379;'>정상 (Watertight)</span>" if c_wt else "<span style='color:#ff5555; font-weight:bold;'>비-watertight (오류)</span>"
         cn_wt_html = "<span style='color:#98c379;'>정상 (Watertight)</span>" if cn_wt else "<span style='color:#ff5555; font-weight:bold;'>비-watertight (오류)</span>"
         i_wt_html = "<span style='color:#98c379;'>정상 (Watertight)</span>" if i_wt else "<span style='color:#ff5555; font-weight:bold;'>비-watertight (오류)</span>"
         a_wt_html = "<span style='color:#98c379;'>정상</span>" if a_wt else "<span style='color:#ff5555;'>비-watertight</span>"
+        sc_wt_html = "<span style='color:#98c379;'>정상</span>" if sc_wt else "<span style='color:#ff5555;'>비-watertight</span>"
         cr_wt_html = "<span style='color:#98c379;'>정상</span>" if cr_wt else "<span style='color:#ff5555;'>비-watertight</span>"
 
         c_pc = rep.get("cortical_pieces", 1)
@@ -433,10 +441,13 @@ class GeometryPanel(QWidget):
         cn_pc_html = f"{cn_pc}개" if cn_pc == 1 else f"<span style='color:#ff5555; font-weight:bold;'>{cn_pc}개 (조각 분리됨)</span>"
 
         abut_vol = rep.get("abutment_volume", 0.0)
+        screw_vol = rep.get("screw_volume", 0.0)
         crown_vol = rep.get("crown_volume", 0.0)
         extra_parts_html = ""
         if abut_vol > 0:
             extra_parts_html += f"• 지대주(Abutment): {abut_vol:.1f} mm³ ({a_wt_html})<br>"
+        if screw_vol > 0:
+            extra_parts_html += f"• 스크류(Screw): {screw_vol:.1f} mm³ ({sc_wt_html})<br>"
         if crown_vol > 0:
             extra_parts_html += f"• 보철물(Crown): {crown_vol:.1f} mm³ ({cr_wt_html})<br>"
 
@@ -463,6 +474,7 @@ class GeometryPanel(QWidget):
             "cancellous": self.chk_cancellous.isChecked(),
             "implant": self.chk_implant.isChecked(),
             "abutment": getattr(self, "chk_abutment", None) and self.chk_abutment.isChecked(),
+            "screw": getattr(self, "chk_screw", None) and self.chk_screw.isChecked(),
             "crown": getattr(self, "chk_crown", None) and self.chk_crown.isChecked(),
             "opacity": 0.85
         }

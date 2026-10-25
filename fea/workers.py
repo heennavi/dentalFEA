@@ -100,6 +100,7 @@ class MeshWorker(QThread):
 
             abutment_mesh = getattr(self.fea_geometry, "abutment", None) if not isinstance(self.fea_geometry, dict) else self.fea_geometry.get("abutment")
             crown_mesh = getattr(self.fea_geometry, "crown", None) if not isinstance(self.fea_geometry, dict) else self.fea_geometry.get("crown")
+            screw_mesh = getattr(self.fea_geometry, "screw", None) if not isinstance(self.fea_geometry, dict) else self.fea_geometry.get("screw")
 
             # 메쉬 유효성/watertight 보정
             from dental_fea_app.geometry.boolean_ops import ensure_watertight
@@ -114,6 +115,11 @@ class MeshWorker(QThread):
             else:
                 abutment_mesh = None
 
+            if screw_mesh is not None and len(getattr(screw_mesh, "faces", [])) > 0:
+                screw_mesh = ensure_watertight(screw_mesh, name="screw")
+            else:
+                screw_mesh = None
+
             if crown_mesh is not None and len(getattr(crown_mesh, "faces", [])) > 0:
                 crown_mesh = ensure_watertight(crown_mesh, name="crown")
             else:
@@ -127,6 +133,7 @@ class MeshWorker(QThread):
             parts: List[MeshPart] = []
             implant_part: Optional[MeshPart] = None
             abutment_part: Optional[MeshPart] = None
+            screw_part: Optional[MeshPart] = None
             crown_part: Optional[MeshPart] = None
 
             if implant_mesh is not None and len(implant_mesh.faces) > 0:
@@ -161,9 +168,26 @@ class MeshWorker(QThread):
                     optimize_netgen=opt_netgen,
                 )
 
-            # 2-2. 보철물(Crown) 체적 메쉬 생성
+            # 2-2. 스크류(Screw) 체적 메쉬 생성
+            if screw_mesh is not None and len(screw_mesh.faces) > 0:
+                self.progress.emit(30, "어버트먼트 스크류(Screw) 3D 체적 메쉬 생성 중 (Gmsh)...")
+                if self._is_cancelled:
+                    return
+
+                size_sc = getattr(self.config, "mesh_size_screw_mm", None) or min(self.config.mesh_size_near_mm, 0.35)
+                screw_part = build_part_mesh(
+                    name="screw",
+                    surface=screw_mesh,
+                    size_far=size_sc,
+                    size_near=size_sc,
+                    order=order,
+                    mesh_algorithm_3d=algo_3d,
+                    optimize_netgen=opt_netgen,
+                )
+
+            # 2-3. 보철물(Crown) 체적 메쉬 생성
             if crown_mesh is not None and len(crown_mesh.faces) > 0:
-                self.progress.emit(35, "보철물(Crown) 3D 체적 메쉬 생성 중 (Gmsh)...")
+                self.progress.emit(38, "보철물(Crown) 3D 체적 메쉬 생성 중 (Gmsh)...")
                 if self._is_cancelled:
                     return
 
@@ -199,16 +223,18 @@ class MeshWorker(QThread):
                 parts.append(implant_part)
             if abutment_part is not None:
                 parts.append(abutment_part)
+            if screw_part is not None:
+                parts.append(screw_part)
             if crown_part is not None:
                 parts.append(crown_part)
 
             if self._is_cancelled:
                 return
 
-            # 4. 결합면(*TIE) 추출 (골-임플란트, 임플란트-지대주, 지대주-크라운 완전 결합)
+            # 4. 결합면(*TIE) 추출 (골-임플란트, 임플란트-지대주, 지대주-크라운, 스크류-지대주, 임플란트-스크류)
             ties: List[TieDef] = []
             if implant_part is not None:
-                self.progress.emit(70, "골-임플란트 결합면(*TIE) 추출 중...")
+                self.progress.emit(65, "골-임플란트 결합면(*TIE) 추출 중...")
                 tie_bone = contact_pair_from_parts(
                     part_a=implant_part,
                     part_b=bone_part,
@@ -219,7 +245,7 @@ class MeshWorker(QThread):
                 ties.append(tie_bone)
 
             if implant_part is not None and abutment_part is not None:
-                self.progress.emit(75, "임플란트-지대주 결합면(*TIE) 추출 중...")
+                self.progress.emit(70, "임플란트-지대주 결합면(*TIE) 추출 중...")
                 tie_imp_abut = contact_pair_from_parts(
                     part_a=implant_part,
                     part_b=abutment_part,
@@ -229,8 +255,32 @@ class MeshWorker(QThread):
                 )
                 ties.append(tie_imp_abut)
 
+            if abutment_part is not None and screw_part is not None:
+                self.progress.emit(75, "스크류-지대주 안착턱 결합면(*TIE) 추출 중...")
+                tie_sc_abut = contact_pair_from_parts(
+                    part_a=abutment_part,
+                    part_b=screw_part,
+                    tol_mm=self.contact_tolerance_mm,
+                    master="auto",
+                    name="TIE_SCREW_ABUTMENT",
+                )
+                ties.append(tie_sc_abut)
+
+            if implant_part is not None and screw_part is not None:
+                self.progress.emit(80, "임플란트-스크류 나사산 결합면(*TIE, 일반 공차) 추출 중...")
+                # 나사산 플랭크 간 일반 공차 적용 (기본 0.20 mm)
+                thread_tol = float(getattr(self.config, "screw_contact_tol_mm", 0.20))
+                tie_imp_sc = contact_pair_from_parts(
+                    part_a=implant_part,
+                    part_b=screw_part,
+                    tol_mm=thread_tol,
+                    master="a",
+                    name="TIE_IMPLANT_SCREW",
+                )
+                ties.append(tie_imp_sc)
+
             if abutment_part is not None and crown_part is not None:
-                self.progress.emit(80, "지대주-보철물(Crown) 결합면(*TIE) 추출 중...")
+                self.progress.emit(85, "지대주-보철물(Crown) 결합면(*TIE) 추출 중...")
                 tie_abut_crown = contact_pair_from_parts(
                     part_a=abutment_part,
                     part_b=crown_part,
@@ -242,7 +292,9 @@ class MeshWorker(QThread):
 
             # 5. 메쉬 모델 조립 및 품질 보고서 생성
             self.progress.emit(90, "메쉬 무결성 및 품질 검사 중...")
-            mesh_model = MeshModel(parts=parts)
+            from meshing.quality_checker import clean_mesh_model
+            raw_model = MeshModel(parts=parts)
+            mesh_model = clean_mesh_model(raw_model)
             q_report = quality_report_text(mesh_model)
 
             self.progress.emit(100, "체적 메쉬 생성 완료")

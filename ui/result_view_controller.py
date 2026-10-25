@@ -144,6 +144,13 @@ class ResultViewController(QObject):
         # 기존 결과 및 장면 정리 (현재 장면의 원래 가시성 백업)
         self.clear()
 
+        # 3D 뷰어 창이 연결되어 있으면 결과 모드 활성화 (우클릭 팝업 메뉴 및 기즈모 비활성화)
+        if self.window is not None and hasattr(self.window, "set_result_view_mode"):
+            try:
+                self.window.set_result_view_mode(True)
+            except Exception:
+                pass
+
         self._model = model
         self._rs = rs
         self._materials = materials

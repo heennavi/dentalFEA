@@ -10,14 +10,29 @@ Verifies:
 5. Marker lifecycle and complete clean-up via clear_markers() and detach().
 """
 
+import os
 import numpy as np
 import pytest
 import vtk
+from PySide6.QtWidgets import QApplication
 
 from fea.models import MeshPart, MeshModel, MaterialDef, MaterialAssignment
 from fea.results import ResultSet
 from ui.result_view_controller import ResultViewController
 from ui.result_probe import ResultProbe
+
+
+os.environ["QT_QPA_PLATFORM"] = "offscreen"
+
+
+@pytest.fixture(scope="session")
+def qapp():
+    """Ensure QApplication instance exists for GUI tests."""
+    os.environ["QT_QPA_PLATFORM"] = "offscreen"
+    app = QApplication.instance()
+    if app is None:
+        app = QApplication([])
+    return app
 
 
 @pytest.fixture
@@ -232,4 +247,207 @@ def test_mouse_drag_threshold(offscreen_controller):
     probe._on_left_button_release(MockCaller((101, 101)), "LeftButtonReleaseEvent")
     assert len(picked) == 1
     assert picked[0] == (101, 101)
+
+
+def test_result_probe_qt_event_filter(qapp, offscreen_controller):
+    """Test that ResultProbe eventFilter intercepts Qt mouse events and calculates VTK coordinates."""
+    from PySide6.QtWidgets import QWidget
+    from PySide6.QtCore import Qt, QPointF, QEvent
+    from PySide6.QtGui import QMouseEvent
+
+    widget = QWidget()
+    widget.resize(400, 300)
+
+    class MockWindow:
+        def __init__(self, w, ren):
+            self.vtkWidget = w
+            self.renderer = ren
+        def render(self):
+            pass
+
+    win = MockWindow(widget, offscreen_controller.renderer)
+    ctrl = ResultViewController(win)
+    ctrl._model = offscreen_controller._model
+    ctrl._rs = offscreen_controller._rs
+
+    probe = ResultProbe()
+    probe.attach(ctrl)
+    probe.enable_click_probe(True)
+
+    picked = []
+    probe._perform_pick = lambda x, y: picked.append((x, y))
+
+    # Click at (150, 100). Widget height is 300.
+    # Expected VTK Y: 300 - 100 - 1 = 199.
+    pt = QPointF(150.0, 100.0)
+    ev_press = QMouseEvent(QEvent.Type.MouseButtonPress, pt, pt, Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier)
+    probe.eventFilter(widget, ev_press)
+
+    ev_release = QMouseEvent(QEvent.Type.MouseButtonRelease, pt, pt, Qt.MouseButton.LeftButton, Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier)
+    probe.eventFilter(widget, ev_release)
+
+    assert len(picked) == 1
+    assert picked[0] == (150, 199)
+
+
+def test_result_controller_auto_open_3d_viewer(qapp):
+    """Test ResultController auto-opens and focuses 3D viewer when probe is enabled."""
+    from dental_fea_app.core.state_manager import StateManager
+    from ui.result_controller import ResultController
+    from ui.result_panel import ResultPanel
+
+    sm = StateManager()
+    panel = ResultPanel(sm)
+    rc = ResultController(sm, panel=panel)
+
+    called = []
+    rc.open_3d_viewer_callback = lambda: called.append(True)
+
+    # When view_controller is None, enabling probe should trigger callback
+    assert rc.view_controller is None
+    rc.set_probe_enabled(True)
+    assert len(called) == 1
+
+    # When window exists, enabling probe should call show / raise_ / activateWindow
+    class MockWin:
+        def __init__(self):
+            self.actions = []
+        def show(self): self.actions.append("show")
+        def raise_(self): self.actions.append("raise_")
+        def activateWindow(self): self.actions.append("activateWindow")
+
+    class MockVC:
+        def __init__(self, win):
+            self.window = win
+            self.renderer = object()
+
+    mock_win = MockWin()
+    rc.view_controller = MockVC(mock_win)
+    rc.set_probe_enabled(True)
+    assert "show" in mock_win.actions
+    assert "raise_" in mock_win.actions
+    assert "activateWindow" in mock_win.actions
+
+
+def test_result_probe_cursor_and_status_bar(qapp, offscreen_controller):
+    """Test cursor shape toggle and status bar message updates."""
+    from PySide6.QtWidgets import QWidget, QStatusBar
+    from PySide6.QtCore import Qt
+
+    widget = QWidget()
+    status_bar = QStatusBar()
+
+    class MockWindow:
+        def __init__(self, w, ren, sb):
+            self.vtkWidget = w
+            self.renderer = ren
+            self._sb = sb
+        def statusBar(self):
+            return self._sb
+        def render(self):
+            pass
+
+    win = MockWindow(widget, offscreen_controller.renderer, status_bar)
+    ctrl = ResultViewController(win)
+
+    probe = ResultProbe()
+    probe.attach(ctrl)
+
+    # Enable probe
+    probe.enable_click_probe(True)
+    assert widget.cursor().shape() == Qt.CursorShape.CrossCursor
+    assert "프로브 모드 활성화됨" in status_bar.currentMessage()
+
+    # Disable probe
+    probe.enable_click_probe(False)
+    assert widget.cursor().shape() == Qt.CursorShape.ArrowCursor
+    assert status_bar.currentMessage() == ""
+
+
+def test_disable_probe_clears_yellow_sphere_and_caption(qapp, offscreen_controller):
+    """Test that disabling click probe immediately removes probe sphere and caption."""
+    ctrl = offscreen_controller
+    probe = ResultProbe()
+    probe.attach(ctrl)
+    probe.enable_click_probe(True)
+
+    # Simulate finding and updating a probe marker
+    probe_data = probe.find_nearest_node([0.0, 0.0, 0.0])
+    assert probe_data is not None
+    probe._update_probe_marker(probe_data)
+
+    assert probe._probe_sphere_actor is not None
+    assert probe._probe_caption_actor is not None
+
+    # When probe mode is turned off, markers must be removed
+    probe.enable_click_probe(False)
+    assert probe._probe_sphere_actor is None
+    assert probe._probe_caption_actor is None
+
+
+def test_mark_maximum_none_hides_marker(qapp, offscreen_controller):
+    """Test that selecting '보이지 않기' (NONE) clears maximum stress marker."""
+    ctrl = offscreen_controller
+    probe = ResultProbe()
+    probe.attach(ctrl)
+
+    # First mark maximum
+    info = probe.mark_maximum("von_mises", part_name="bone")
+    assert info is not None
+    assert probe._max_sphere_actor is not None
+    assert probe._max_caption_actor is not None
+
+    # Then select NONE
+    res = probe.mark_maximum("von_mises", part_name="NONE")
+    assert res is None
+    assert probe._max_sphere_actor is None
+    assert probe._max_caption_actor is None
+
+
+def test_result_panel_combo_max_part_has_none(qapp):
+    """Test that ResultPanel combo_max_part includes '보이지 않기' (NONE)."""
+    from dental_fea_app.core.state_manager import StateManager
+    from ui.result_panel import ResultPanel
+
+    sm = StateManager()
+    panel = ResultPanel(sm)
+
+    data_list = [panel.combo_max_part.itemData(i) for i in range(panel.combo_max_part.count())]
+    text_list = [panel.combo_max_part.itemText(i) for i in range(panel.combo_max_part.count())]
+
+    assert "NONE" in data_list
+    assert "보이지 않기" in text_list
+
+
+def test_volume_viewer_right_click_in_result_mode(qapp):
+    """Test that right-click context menu is suppressed when in result view mode."""
+    from dental_fea_app.core.state_manager import StateManager
+    from dental_fea_app.ui.volume_viewer_window import VolumeViewerWindow
+    from PySide6.QtGui import QMouseEvent
+    from PySide6.QtCore import Qt, QPointF, QEvent
+
+    sm = StateManager()
+    win = VolumeViewerWindow(sm)
+
+    menu_shown = []
+    win._show_implant_context_menu = lambda pos, imp: menu_shown.append(True)
+
+    pt = QPointF(100.0, 100.0)
+    ev_right = QMouseEvent(QEvent.Type.MouseButtonPress, pt, pt, Qt.MouseButton.RightButton, Qt.MouseButton.RightButton, Qt.KeyboardModifier.NoModifier)
+
+    # 1. When NOT in result view mode, right click triggers context menu
+    win.set_result_view_mode(False)
+    win.eventFilter(win.vtkWidget, ev_right)
+    assert len(menu_shown) == 1
+
+    # 2. When IN result view mode, right click must NOT show context menu
+    menu_shown.clear()
+    win.set_result_view_mode(True)
+    res = win.eventFilter(win.vtkWidget, ev_right)
+    assert len(menu_shown) == 0
+
+    win.close()
+
+
+
 

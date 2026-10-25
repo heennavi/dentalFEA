@@ -30,6 +30,7 @@ from dental_fea_app.placement.implant_generator import (
     ProstheticSpec,
     generate_abutment_polydata,
     generate_prosthetic_polydata,
+    get_screw_hole_params,
 )
 from dental_fea_app.placement.implant_placement_manager import ImplantPlacementManager
 from meshing.gmsh_mesher import build_part_mesh
@@ -69,10 +70,12 @@ def test_abutment_watertight_and_implant_fitting():
     mesh = _vtk_polydata_to_trimesh(poly)
     assert mesh.is_watertight, "Abutment 메쉬는 반드시 watertight여야 합니다."
     assert mesh.is_volume, "Abutment 메쉬는 유효한 양의 체적을 가져야 합니다."
-    assert mesh.euler_number == 2, f"Abutment Euler 수는 2(구상동형)여야 하나 {mesh.euler_number}입니다."
+    # 관통 스크류 홀이 있는 경우 genus 1 (Euler 수 0), 폐곡면인 경우 genus 0 (Euler 수 2)
+    assert mesh.euler_number in (0, 2), f"Abutment Euler 수는 0(관통홀) 또는 2여야 하나 {mesh.euler_number}입니다."
 
-    # Hex 하부 돌출부 깊이 검증 (z min이 임플란트 홀 깊이와 일치)
-    expected_depth = min(2.5, 10.0 * 0.35)
+    # Hex 하부 돌출부 깊이 검증 (z min이 임플란트 헥사 홀 깊이 1.5mm와 일치)
+    params = get_screw_hole_params(imp_spec.diameter_mm, imp_spec.length_mm)
+    expected_depth = params["hex_depth"]
     z_min = mesh.vertices[:, 2].min()
     assert math.isclose(z_min, -expected_depth, abs_tol=1e-2)
 

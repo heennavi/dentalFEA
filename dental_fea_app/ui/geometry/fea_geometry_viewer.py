@@ -233,7 +233,18 @@ class FeaGeometryViewWidget(QWidget):
         self.abutment_actor.SetVisibility(False)
         self.renderer.AddActor(self.abutment_actor)
 
-        # 3-2. 보철물(Crown) 솔리드 (지르코니아/골드)
+        # 3-2. 스크류(Screw) 솔리드 (티타늄/골드 메탈릭)
+        self.screw_mapper = vtk.vtkPolyDataMapper()
+        self.screw_actor = vtk.vtkActor()
+        self.screw_actor.SetMapper(self.screw_mapper)
+        self.screw_actor.GetProperty().SetColor(0.85, 0.75, 0.35)
+        self.screw_actor.GetProperty().SetOpacity(1.0)
+        self.screw_actor.GetProperty().SetSpecular(0.65)
+        self.screw_actor.GetProperty().SetSpecularPower(45.0)
+        self.screw_actor.SetVisibility(False)
+        self.renderer.AddActor(self.screw_actor)
+
+        # 3-3. 보철물(Crown) 솔리드 (지르코니아/골드)
         self.crown_mapper = vtk.vtkPolyDataMapper()
         self.crown_actor = vtk.vtkActor()
         self.crown_actor.SetMapper(self.crown_mapper)
@@ -264,6 +275,7 @@ class FeaGeometryViewWidget(QWidget):
             self.cancellous_actor.SetVisibility(False)
             self.implant_actor.SetVisibility(False)
             self.abutment_actor.SetVisibility(False)
+            self.screw_actor.SetVisibility(False)
             self.crown_actor.SetVisibility(False)
             self.stack.setCurrentWidget(self.lbl_placeholder)
             self.render()
@@ -287,6 +299,13 @@ class FeaGeometryViewWidget(QWidget):
             all_polys.append(poly_a)
         else:
             self.abutment_mapper.SetInputData(vtk.vtkPolyData())
+
+        if getattr(fea_geom, "screw", None) is not None and len(fea_geom.screw.faces) > 0:
+            poly_s = trimesh_to_vtk_polydata(fea_geom.screw)
+            self.screw_mapper.SetInputData(poly_s)
+            all_polys.append(poly_s)
+        else:
+            self.screw_mapper.SetInputData(vtk.vtkPolyData())
 
         if fea_geom.crown is not None and len(fea_geom.crown.faces) > 0:
             poly_cr = trimesh_to_vtk_polydata(fea_geom.crown)
@@ -322,6 +341,7 @@ class FeaGeometryViewWidget(QWidget):
             self.cancellous_actor.SetVisibility(False)
             self.implant_actor.SetVisibility(False)
             self.abutment_actor.SetVisibility(False)
+            self.screw_actor.SetVisibility(False)
             self.crown_actor.SetVisibility(False)
             return
 
@@ -341,6 +361,10 @@ class FeaGeometryViewWidget(QWidget):
         self.abutment_actor.SetVisibility(bool(vis.get("abutment", True)) and has_abut)
         self.abutment_actor.GetProperty().SetOpacity(1.0)
 
+        has_screw = (getattr(geom, "screw", None) is not None and len(geom.screw.faces) > 0)
+        self.screw_actor.SetVisibility(bool(vis.get("screw", True)) and has_screw)
+        self.screw_actor.GetProperty().SetOpacity(1.0)
+
         has_crown = (geom.crown is not None and len(geom.crown.faces) > 0)
         self.crown_actor.SetVisibility(bool(vis.get("crown", True)) and has_crown)
         self.crown_actor.GetProperty().SetOpacity(1.0)
@@ -351,7 +375,7 @@ class FeaGeometryViewWidget(QWidget):
 
     def _apply_fea_clipping(self):
         clip = getattr(self.state_mgr, "fea_clipping", None)
-        mappers = [self.cortical_mapper, self.cancellous_mapper, self.implant_mapper, self.abutment_mapper, self.crown_mapper]
+        mappers = [self.cortical_mapper, self.cancellous_mapper, self.implant_mapper, self.abutment_mapper, self.screw_mapper, self.crown_mapper]
         if clip is None or not clip.get("enabled", False):
             for mapper in mappers:
                 mapper.RemoveAllClippingPlanes()

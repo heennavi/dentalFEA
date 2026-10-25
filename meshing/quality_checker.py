@@ -229,3 +229,44 @@ def assert_mesh_ok(report: Any, max_negative: int = 0) -> None:
             f"메쉬 품질 검사 실패: 음의 부피를 가진 반전 사면체 요소가 {n_neg}개 "
             f"검출되었습니다 (허용치: {max_negative}개)."
         )
+
+
+def clean_mesh_part(part: Any, min_volume: float = 1e-12) -> Any:
+    """
+    Check and sanitize a MeshPart by removing degenerate elements (volume <= min_volume or duplicate nodes).
+
+    Args:
+        part: MeshPart instance.
+        min_volume: Minimum threshold volume in mm^3 (default: 1e-12).
+
+    Returns:
+        MeshPart: Cleaned MeshPart instance (new copy if modified, original if already clean).
+    """
+    from meshing.gmsh_mesher import filter_degenerate_elements
+    cleaned_nodes, cleaned_elems = filter_degenerate_elements(part.nodes, part.elements, min_volume=min_volume)
+    if len(cleaned_elems) != len(part.elements) or len(cleaned_nodes) != len(part.nodes):
+        from fea.models import MeshPart
+        return MeshPart(
+            name=part.name,
+            nodes=cleaned_nodes,
+            elements=cleaned_elems,
+            element_type=part.element_type,
+            surface_tags=dict(part.surface_tags),
+        )
+    return part
+
+
+def clean_mesh_model(model: Any, min_volume: float = 1e-12) -> Any:
+    """
+    Sanitize all solid parts in a MeshModel by eliminating degenerate elements.
+
+    Args:
+        model: MeshModel instance.
+        min_volume: Minimum threshold volume in mm^3.
+
+    Returns:
+        MeshModel: Cleaned MeshModel.
+    """
+    from fea.models import MeshModel
+    cleaned_parts = [clean_mesh_part(p, min_volume=min_volume) for p in model.parts]
+    return MeshModel(parts=cleaned_parts)

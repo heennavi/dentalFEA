@@ -30,6 +30,7 @@ class FeaGeometry:
     bone: Optional[trimesh.Trimesh] = None
     abutment: Optional[trimesh.Trimesh] = None
     crown: Optional[trimesh.Trimesh] = None
+    screw: Optional[trimesh.Trimesh] = None
 
 
 def filter_small_components(
@@ -297,6 +298,7 @@ def build_fea_geometry(
     bone_mesh: Optional[trimesh.Trimesh] = None,
     abutment_mesh: Optional[trimesh.Trimesh] = None,
     crown_mesh: Optional[trimesh.Trimesh] = None,
+    screw_mesh: Optional[trimesh.Trimesh] = None,
 ) -> FeaGeometry:
     """
     피질골, 수질골 메쉬에서 임플란트 식립 공간을 절제하고 중복 부피를 정리하며,
@@ -446,6 +448,8 @@ def build_fea_geometry(
 
     # 8. Abutment 및 Crown 검증 및 처리
     abutment_final = None
+    # 8. Abutment, Crown 및 Screw 검증 및 처리
+    abutment_final = None
     if abutment_mesh is not None and len(getattr(abutment_mesh, "faces", [])) > 0:
         abutment_final = ensure_watertight(abutment_mesh, name="abutment", allow_empty=True)
         if len(abutment_final.faces) > 0:
@@ -457,8 +461,15 @@ def build_fea_geometry(
         if len(crown_final.faces) > 0:
             crown_final.fix_normals()
 
+    screw_final = None
+    if screw_mesh is not None and len(getattr(screw_mesh, "faces", [])) > 0:
+        screw_final = ensure_watertight(screw_mesh, name="screw", allow_empty=True)
+        if len(screw_final.faces) > 0:
+            screw_final.fix_normals()
+
     abutment_vol = abs(float(abutment_final.volume)) if (abutment_final is not None and len(abutment_final.faces) > 0) else 0.0
     crown_vol = abs(float(crown_final.volume)) if (crown_final is not None and len(crown_final.faces) > 0) else 0.0
+    screw_vol = abs(float(screw_final.volume)) if (screw_final is not None and len(screw_final.faces) > 0) else 0.0
 
     report = {
         "cortical_volume": c_vol,
@@ -466,6 +477,7 @@ def build_fea_geometry(
         "implant_volume": i_vol,
         "abutment_volume": abutment_vol,
         "crown_volume": crown_vol,
+        "screw_volume": screw_vol,
         "initial_cortical_volume": initial_cortical_vol,
         "initial_cancellous_volume": initial_cancellous_vol,
         "initial_bone_volume": initial_bone_vol,
@@ -476,6 +488,7 @@ def build_fea_geometry(
         "implant_watertight": bool(implant_final.is_watertight),
         "abutment_watertight": bool(abutment_final.is_watertight) if abutment_final is not None else False,
         "crown_watertight": bool(crown_final.is_watertight) if crown_final is not None else False,
+        "screw_watertight": bool(screw_final.is_watertight) if screw_final is not None else False,
         "cortical_pieces": c_pieces,
         "cancellous_pieces": cn_pieces,
         "implant_pieces": i_pieces,
@@ -493,13 +506,14 @@ def build_fea_geometry(
         report=report,
         bone=bone_final,
         abutment=abutment_final,
-        crown=crown_final
+        crown=crown_final,
+        screw=screw_final,
     )
 
 
 def export_stl(geometry: FeaGeometry, out_dir: str) -> Dict[str, str]:
     """
-    FeaGeometry의 솔리드들(cortical, cancellous, implant, abutment, crown)을 STL 파일로 저장합니다.
+    FeaGeometry의 솔리드들(cortical, cancellous, implant, abutment, crown, screw)을 STL 파일로 저장합니다.
 
     Parameters
     ----------
@@ -531,5 +545,9 @@ def export_stl(geometry: FeaGeometry, out_dir: str) -> Dict[str, str]:
     if geometry.crown is not None and len(geometry.crown.faces) > 0:
         paths["crown"] = os.path.join(out_dir, "crown.stl")
         geometry.crown.export(paths["crown"])
+
+    if geometry.screw is not None and len(geometry.screw.faces) > 0:
+        paths["screw"] = os.path.join(out_dir, "screw.stl")
+        geometry.screw.export(paths["screw"])
 
     return paths

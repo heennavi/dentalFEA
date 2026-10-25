@@ -33,6 +33,7 @@ class ControlPanel(QWidget):
     def __init__(self, state_manager: StateManager, on_open_3d_viewer: Callable[[], None], parent: Optional[QWidget] = None):
         super().__init__(parent)
         self.state_mgr = state_manager
+        self.on_open_3d_viewer = on_open_3d_viewer
         self.setMinimumWidth(276)  # 기존 240px에서 15% 확대
         self.setMaximumWidth(600)
 
@@ -231,6 +232,7 @@ class ControlPanel(QWidget):
         # 탭 6: Phase 4 FEA 해석 결과 패널
         self.result_panel = ResultPanel(self.state_mgr, self)
         self.result_controller = ResultController(self.state_mgr, panel=self.result_panel, parent=self)
+        self.result_controller.open_3d_viewer_callback = getattr(self, "on_open_3d_viewer", None)
         self.result_panel.controller = self.result_controller
         tabs.addTab(self.result_panel, "6. 결과")
 

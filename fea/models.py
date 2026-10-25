@@ -166,6 +166,10 @@ class AnalysisConfig:
     optimize_netgen: bool = True          # Netgen 3D 볼륨 최적화기 활성화 여부
     mesh_size_abutment_mm: Optional[float] = None  # Abutment target mesh edge size (mm)
     mesh_size_crown_mm: Optional[float] = None     # Crown target mesh edge size (mm)
+    mesh_size_screw_mm: Optional[float] = None     # Screw target mesh edge size (mm)
+    screw_contact_tol_mm: float = 0.20             # Thread clearance tolerance for screw-implant contact (mm)
+    preload_enabled: bool = True                   # Whether abutment screw preload is applied
+    preload_force_n: float = 200.0                 # Abutment screw tightening preload force (N)
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert configuration to JSON-serializable dictionary."""
@@ -179,6 +183,10 @@ class AnalysisConfig:
             "optimize_netgen": bool(self.optimize_netgen),
             "mesh_size_abutment_mm": float(self.mesh_size_abutment_mm) if self.mesh_size_abutment_mm is not None else None,
             "mesh_size_crown_mm": float(self.mesh_size_crown_mm) if self.mesh_size_crown_mm is not None else None,
+            "mesh_size_screw_mm": float(self.mesh_size_screw_mm) if self.mesh_size_screw_mm is not None else None,
+            "screw_contact_tol_mm": float(self.screw_contact_tol_mm),
+            "preload_enabled": bool(self.preload_enabled),
+            "preload_force_n": float(self.preload_force_n),
         }
 
     @classmethod
@@ -186,6 +194,7 @@ class AnalysisConfig:
         """Instantiate AnalysisConfig from dictionary."""
         abut_sz = data.get("mesh_size_abutment_mm")
         crown_sz = data.get("mesh_size_crown_mm")
+        screw_sz = data.get("mesh_size_screw_mm")
         return cls(
             mesh_size_far_mm=float(data.get("mesh_size_far_mm", 2.0)),
             mesh_size_near_mm=float(data.get("mesh_size_near_mm", 0.40)),
@@ -196,4 +205,8 @@ class AnalysisConfig:
             optimize_netgen=bool(data.get("optimize_netgen", True)),
             mesh_size_abutment_mm=float(abut_sz) if abut_sz is not None else None,
             mesh_size_crown_mm=float(crown_sz) if crown_sz is not None else None,
+            mesh_size_screw_mm=float(screw_sz) if screw_sz is not None else None,
+            screw_contact_tol_mm=float(data.get("screw_contact_tol_mm", 0.20)),
+            preload_enabled=bool(data.get("preload_enabled", True)),
+            preload_force_n=float(data.get("preload_force_n", 200.0)),
         )

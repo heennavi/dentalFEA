@@ -93,3 +93,32 @@ class TestQualityChecker:
 
         # assert_mesh_ok should pass with healthy MeshModel
         assert_mesh_ok(model, max_negative=0)
+
+    def test_filter_degenerate_elements_and_clean_model(self, regular_tet):
+        """Verify degenerate and zero-volume elements are eliminated and nodes are reindexed."""
+        from meshing.gmsh_mesher import filter_degenerate_elements
+        from meshing.quality_checker import clean_mesh_model
+        from fea.models import MeshPart, MeshModel
+
+        nodes, elements = regular_tet
+        # Add extra unused orphan node
+        nodes_with_orphan = np.vstack([nodes, [[10.0, 10.0, 10.0]]])
+        # Element 0: valid regular tet
+        # Element 1: degenerate with duplicate corner node [0, 0, 1, 2]
+        # Element 2: degenerate zero volume coplanar tet [0, 1, 2, 1]
+        elem_dup = np.array([0, 0, 1, 2], dtype=np.int64)
+        coplanar_elem = np.array([0, 1, 2, 0], dtype=np.int64)
+        bad_elements = np.vstack([elements, elem_dup, coplanar_elem])
+
+        cleaned_nodes, cleaned_elems = filter_degenerate_elements(nodes_with_orphan, bad_elements)
+        assert len(cleaned_elems) == 1
+        assert len(cleaned_nodes) == 4
+        # Orphan node at index 4 should be stripped away
+        assert np.all(cleaned_elems[0] == [0, 1, 2, 3])
+
+        # Test clean_mesh_model
+        part = MeshPart(name="screw", nodes=nodes_with_orphan, elements=bad_elements, element_type="C3D4")
+        model = MeshModel(parts=[part])
+        cleaned_model = clean_mesh_model(model)
+        assert len(cleaned_model.get_part("screw").elements) == 1
+        assert len(cleaned_model.get_part("screw").nodes) == 4

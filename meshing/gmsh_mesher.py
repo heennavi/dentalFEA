@@ -164,6 +164,75 @@ def gmsh_tet10_to_ccx(elements: np.ndarray) -> np.ndarray:
     return ccx_elems
 
 
+def filter_degenerate_elements(
+    nodes: np.ndarray,
+    elements: np.ndarray,
+    min_volume: float = 1e-12,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Remove degenerate, zero-volume, or duplicate-node tetrahedral solid elements.
+
+    Detects and eliminates:
+    1. Elements where any two corner vertices or midside nodes share identical node indices.
+    2. Elements with signed volume <= min_volume (collapsed or flat slivers).
+    3. Prunes unreferenced orphan nodes and re-indexes element connectivity safely.
+
+    Args:
+        nodes: (N, 3) float64 array of nodal coordinates.
+        elements: (M, 4 or 10) int64 array of tetrahedral connectivity.
+        min_volume: Minimum threshold volume in mm^3 (default: 1e-12).
+
+    Returns:
+        Tuple[np.ndarray, np.ndarray]: (cleaned_nodes, cleaned_elements).
+    """
+    if len(elements) == 0:
+        return nodes, elements
+
+    elems = elements.copy()
+    n_nodes_per_elem = elems.shape[1]
+
+    # 1. 꼭짓점(첫 4개 노드) 중복 절점 검사
+    c0 = elems[:, 0]
+    c1 = elems[:, 1]
+    c2 = elems[:, 2]
+    c3 = elems[:, 3]
+    dup_corners = (
+        (c0 == c1) | (c0 == c2) | (c0 == c3) |
+        (c1 == c2) | (c1 == c3) | (c2 == c3)
+    )
+
+    if n_nodes_per_elem == 10:
+        has_dup_any = np.array([len(set(row)) < 10 for row in elems], dtype=bool)
+    else:
+        has_dup_any = dup_corners
+
+    # 2. 선형 체적 검사 (꼭짓점 4개 기반)
+    vols = compute_tetrahedron_volumes(nodes, elems)
+    zero_vol = vols <= min_volume
+
+    bad_mask = has_dup_any | zero_vol
+    num_bad = int(np.sum(bad_mask))
+
+    if num_bad > 0:
+        logger.warning(
+            f"퇴화 사면체 요소 {num_bad}개를 체적 메쉬에서 자동으로 제거합니다 "
+            f"(부피 <= {min_volume:.1e} mm³ 또는 중복 절점 포함)."
+        )
+        elems = elems[~bad_mask]
+
+        if len(elems) == 0:
+            logger.error("퇴화 요소 제거 후 남은 요소가 없습니다.")
+            return nodes, elems
+
+        # 3. 고립 절점(unreferenced nodes) 정리 및 인덱스 재매핑
+        unique_nids, inverse_indices = np.unique(elems, return_inverse=True)
+        cleaned_nodes = nodes[unique_nids].copy()
+        cleaned_elems = inverse_indices.reshape(elems.shape).astype(np.int64)
+        return cleaned_nodes, cleaned_elems
+
+    return nodes, elems
+
+
 def mesh_closed_surface(
     stl_path: str,
     size_far: float,
@@ -470,6 +539,9 @@ def mesh_closed_surface(
 
         # 8. 음의 부피 사면체 뒤집기 정규화
         elements = fix_orientation(nodes, elements)
+
+        # 9. 퇴화/불량 사면체(부피 <= 0 또는 중복 절점을 가진 요소) 자동 필터링 및 고립 절점 제거
+        nodes, elements = filter_degenerate_elements(nodes, elements)
 
         return nodes, elements
     finally:

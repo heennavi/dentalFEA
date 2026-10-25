@@ -13,6 +13,7 @@ import vtk
 from .implant_generator import (
     ImplantSpec, ImplantLibraryManager,
     AbutmentSpec, generate_abutment_polydata,
+    ScrewSpec, generate_screw_polydata,
     ProstheticSpec, generate_prosthetic_polydata,
     get_material_color_rgb
 )
@@ -77,6 +78,11 @@ class PlacedImplant:
     abutment_actor: Optional[vtk.vtkActor] = None
     raw_abutment_polydata: Optional[vtk.vtkPolyData] = None
 
+    # Abutment Screw
+    screw: Optional[ScrewSpec] = None
+    screw_actor: Optional[vtk.vtkActor] = None
+    raw_screw_polydata: Optional[vtk.vtkPolyData] = None
+
     # Prosthetic Crown
     prosthetic: Optional[ProstheticSpec] = None
     prosthetic_actor: Optional[vtk.vtkActor] = None
@@ -99,6 +105,8 @@ class ImplantPlacementManager:
         self.slice_fill_actors_2d: Dict[str, Dict[str, vtk.vtkActor]] = {"axial": {}, "coronal": {}, "sagittal": {}}
         self.slice_abutment_actors_2d: Dict[str, Dict[str, vtk.vtkActor]] = {"axial": {}, "coronal": {}, "sagittal": {}}
         self.slice_abutment_fill_actors_2d: Dict[str, Dict[str, vtk.vtkActor]] = {"axial": {}, "coronal": {}, "sagittal": {}}
+        self.slice_screw_actors_2d: Dict[str, Dict[str, vtk.vtkActor]] = {"axial": {}, "coronal": {}, "sagittal": {}}
+        self.slice_screw_fill_actors_2d: Dict[str, Dict[str, vtk.vtkActor]] = {"axial": {}, "coronal": {}, "sagittal": {}}
         self.slice_prosthetic_actors_2d: Dict[str, Dict[str, vtk.vtkActor]] = {"axial": {}, "coronal": {}, "sagittal": {}}
         self.slice_prosthetic_fill_actors_2d: Dict[str, Dict[str, vtk.vtkActor]] = {"axial": {}, "coronal": {}, "sagittal": {}}
 
@@ -122,6 +130,8 @@ class ImplantPlacementManager:
                     self.renderer_3d.RemoveActor(imp.axes_assembly)
                 if imp.abutment_actor:
                     self.renderer_3d.RemoveActor(imp.abutment_actor)
+                if imp.screw_actor:
+                    self.renderer_3d.RemoveActor(imp.screw_actor)
                 if imp.prosthetic_actor:
                     self.renderer_3d.RemoveActor(imp.prosthetic_actor)
 
@@ -135,6 +145,8 @@ class ImplantPlacementManager:
                     self.renderer_3d.AddActor(imp.axes_assembly)
                 if imp.abutment_actor:
                     self.renderer_3d.AddActor(imp.abutment_actor)
+                if imp.screw_actor:
+                    self.renderer_3d.AddActor(imp.screw_actor)
                 if imp.prosthetic_actor:
                     self.renderer_3d.AddActor(imp.prosthetic_actor)
             self._sync_colors_and_axes()
@@ -152,6 +164,7 @@ class ImplantPlacementManager:
                 "orientation": np.copy(imp.orientation),
                 "spec": copy.deepcopy(imp.spec),
                 "abutment": copy.deepcopy(imp.abutment) if imp.abutment else None,
+                "screw": copy.deepcopy(imp.screw) if imp.screw else None,
                 "prosthetic": copy.deepcopy(imp.prosthetic) if imp.prosthetic else None,
             }
         self.history_stack.append(state)
@@ -173,6 +186,11 @@ class ImplantPlacementManager:
                     self.replace_abutment(imp_id, imp_state["abutment"])
                 elif imp.abutment:
                     self.remove_abutment(imp_id)
+
+                if imp_state.get("screw"):
+                    self.attach_screw(imp_id, imp_state["screw"])
+                elif imp.screw:
+                    self.remove_screw(imp_id)
 
                 if imp_state.get("prosthetic"):
                     self.replace_prosthetic(imp_id, imp_state["prosthetic"])
@@ -355,6 +373,7 @@ class ImplantPlacementManager:
                     "file_name": getattr(imp.spec, "file_name", "")
                 },
                 "abutment": None,
+                "screw": None,
                 "prosthetic": None
             }
             if imp.abutment is not None:
@@ -368,6 +387,19 @@ class ImplantPlacementManager:
                     "upper_dir_deg": float(getattr(ab, "upper_dir_deg", 0.0)),
                     "color_type": getattr(ab, "color_type", "gold"),
                     "hex_height_mm": float(getattr(ab, "hex_height_mm", 3.0))
+                }
+            if imp.screw is not None:
+                sc = imp.screw
+                item["screw"] = {
+                    "thread_name": getattr(sc, "thread_name", "M2.0"),
+                    "thread_major_mm": float(getattr(sc, "thread_major_mm", 2.0)),
+                    "thread_pitch_mm": float(getattr(sc, "thread_pitch_mm", 0.4)),
+                    "head_diameter_mm": float(getattr(sc, "head_diameter_mm", 2.65)),
+                    "head_length_mm": float(getattr(sc, "head_length_mm", 1.8)),
+                    "shaft_diameter_mm": float(getattr(sc, "shaft_diameter_mm", 1.6)),
+                    "seat_z_offset_mm": float(getattr(sc, "seat_z_offset_mm", 0.8)),
+                    "driver_hex_mm": float(getattr(sc, "driver_hex_mm", 1.25)),
+                    "color_type": getattr(sc, "color_type", "gold")
                 }
             if imp.prosthetic is not None:
                 pr = imp.prosthetic
@@ -406,11 +438,13 @@ class ImplantPlacementManager:
                 imp.is_visible = is_vis
                 self._update_implant_transform(imp)
 
-                # Abutment 복원
+                # Abutment 복원 (auto_screw=True로 스크류 자동 생성 및 장착)
                 ab_data = item.get("abutment")
                 if ab_data:
                     ab_spec = AbutmentSpec(**ab_data)
-                    self.attach_abutment(imp.id, ab_spec)
+                    self.attach_abutment(imp.id, ab_spec, auto_screw=True)
+                elif item.get("screw"):
+                    self.attach_screw(imp.id)
 
                 # Prosthetic 복원
                 pr_data = item.get("prosthetic")
@@ -503,12 +537,15 @@ class ImplantPlacementManager:
                 imp.axes_assembly.SetVisibility(eff_vis if imp.is_selected else False)
             if imp.abutment_actor:
                 imp.abutment_actor.SetVisibility(eff_vis)
+            if imp.screw_actor:
+                imp.screw_actor.SetVisibility(eff_vis)
             if imp.prosthetic_actor:
                 imp.prosthetic_actor.SetVisibility(eff_vis)
 
             for view_name in ["axial", "coronal", "sagittal"]:
                 for d in [self.slice_actors_2d, self.slice_fill_actors_2d,
                           self.slice_abutment_actors_2d, self.slice_abutment_fill_actors_2d,
+                          self.slice_screw_actors_2d, self.slice_screw_fill_actors_2d,
                           self.slice_prosthetic_actors_2d, self.slice_prosthetic_fill_actors_2d]:
                     if implant_id in d[view_name]:
                         act = d[view_name][implant_id]
@@ -577,7 +614,7 @@ class ImplantPlacementManager:
             self.state_mgr.request_render_all()
 
     # Abutment 관리
-    def attach_abutment(self, implant_id: str, spec: AbutmentSpec) -> bool:
+    def attach_abutment(self, implant_id: str, spec: AbutmentSpec, auto_screw: bool = True) -> bool:
         if implant_id not in self.implants:
             return False
         imp = self.implants[implant_id]
@@ -611,6 +648,10 @@ class ImplantPlacementManager:
             if imp.prosthetic_actor:
                 imp.prosthetic_actor.GetMapper().SetInputData(p_pd)
 
+        # Abutment Screw 자동 장착
+        if auto_screw:
+            self.attach_screw(implant_id)
+
         self._update_implant_transform(imp)
         self.update_2d_slice_contours(self.current_cursor)
         return True
@@ -624,6 +665,8 @@ class ImplantPlacementManager:
         self.save_undo_state()
         if imp.prosthetic:
             self.remove_prosthetic(implant_id)
+        if imp.screw:
+            self.remove_screw(implant_id)
         if imp.abutment_actor and self.renderer_3d is not None:
             self.renderer_3d.RemoveActor(imp.abutment_actor)
         imp.abutment_actor = None
@@ -640,7 +683,7 @@ class ImplantPlacementManager:
         self.update_2d_slice_contours(self.current_cursor)
         return True
 
-    def replace_abutment(self, implant_id: str, new_spec: AbutmentSpec) -> bool:
+    def replace_abutment(self, implant_id: str, new_spec: AbutmentSpec, auto_screw: Optional[bool] = None) -> bool:
         if implant_id not in self.implants:
             return False
         imp = self.implants[implant_id]
@@ -670,7 +713,77 @@ class ImplantPlacementManager:
             if imp.prosthetic_actor:
                 imp.prosthetic_actor.GetMapper().SetInputData(p_pd)
 
+        # Abutment Screw 장착/갱신 처리
+        should_screw = auto_screw if auto_screw is not None else (imp.screw is not None)
+        if should_screw:
+            self.attach_screw(implant_id)
+        elif imp.screw is not None:
+            self.remove_screw(implant_id)
+
         self._update_implant_transform(imp)
+        self.update_2d_slice_contours(self.current_cursor)
+        return True
+
+    # Abutment Screw 관리
+    def attach_screw(self, implant_id: str, spec: Optional[ScrewSpec] = None) -> bool:
+        if implant_id not in self.implants:
+            return False
+        imp = self.implants[implant_id]
+        if imp.abutment is None:
+            return False
+
+        if spec is None:
+            spec = ScrewSpec()
+        imp.screw = copy.deepcopy(spec)
+        screw_pd = generate_screw_polydata(spec, imp.spec, imp.abutment)
+        imp.raw_screw_polydata = screw_pd
+
+        if not imp.screw_actor:
+            mapper = vtk.vtkPolyDataMapper()
+            mapper.SetInputData(screw_pd)
+            actor = vtk.vtkActor()
+            actor.SetMapper(mapper)
+            sr, sg, sb = spec.color_rgb
+            actor.GetProperty().SetColor(sr, sg, sb)
+            actor.GetProperty().SetAmbient(0.35)
+            actor.GetProperty().SetDiffuse(0.85)
+            actor.GetProperty().SetSpecular(0.60)
+            actor.GetProperty().SetSpecularPower(35.0)
+            actor.GetProperty().SetInterpolationToPhong()
+            actor.GetProperty().BackfaceCullingOff()
+            actor.SetVisibility(self.is_visible_all and imp.is_visible)
+            if self.renderer_3d is not None:
+                self.renderer_3d.AddActor(actor)
+            imp.screw_actor = actor
+        else:
+            imp.screw_actor.GetMapper().SetInputData(screw_pd)
+            sr, sg, sb = spec.color_rgb
+            imp.screw_actor.GetProperty().SetColor(sr, sg, sb)
+            imp.screw_actor.SetVisibility(self.is_visible_all and imp.is_visible)
+
+        self._update_implant_transform(imp)
+        self.update_2d_slice_contours(self.current_cursor)
+        return True
+
+    def remove_screw(self, implant_id: str) -> bool:
+        if implant_id not in self.implants:
+            return False
+        imp = self.implants[implant_id]
+        if imp.screw is None:
+            return False
+        if imp.screw_actor and self.renderer_3d is not None:
+            self.renderer_3d.RemoveActor(imp.screw_actor)
+        imp.screw_actor = None
+        imp.screw = None
+        imp.raw_screw_polydata = None
+
+        for view_name in ["axial", "coronal", "sagittal"]:
+            ren = self.renderers_2d.get(view_name)
+            for d in [self.slice_screw_actors_2d, self.slice_screw_fill_actors_2d]:
+                if implant_id in d[view_name]:
+                    act = d[view_name].pop(implant_id)
+                    if ren:
+                        ren.RemoveActor(act)
         self.update_2d_slice_contours(self.current_cursor)
         return True
 
@@ -805,6 +918,16 @@ class ImplantPlacementManager:
             abut_trans.Translate(imp.position[0], imp.position[1], imp.position[2])
             imp.abutment_actor.SetUserTransform(abut_trans)
 
+        if imp.screw_actor:
+            screw_trans = vtk.vtkTransform()
+            screw_trans.PostMultiply()
+            screw_trans.Translate(0.0, 0.0, half_len)
+            screw_trans.RotateZ(imp.orientation[0])
+            screw_trans.RotateX(imp.orientation[1])
+            screw_trans.RotateY(imp.orientation[2])
+            screw_trans.Translate(imp.position[0], imp.position[1], imp.position[2])
+            imp.screw_actor.SetUserTransform(screw_trans)
+
         if imp.prosthetic_actor and imp.abutment:
             prost_trans = vtk.vtkTransform()
             prost_trans.PostMultiply()
@@ -844,6 +967,25 @@ class ImplantPlacementManager:
         if not imp.abutment:
             return None
         poly = imp.raw_abutment_polydata or generate_abutment_polydata(imp.abutment, imp.spec)
+        half_len = imp.spec.length_mm / 2.0
+        tf = vtk.vtkTransform()
+        tf.PostMultiply()
+        tf.Translate(0.0, 0.0, half_len)
+        tf.RotateZ(imp.orientation[0])
+        tf.RotateX(imp.orientation[1])
+        tf.RotateY(imp.orientation[2])
+        tf.Translate(imp.position[0], imp.position[1], imp.position[2])
+
+        flt = vtk.vtkTransformPolyDataFilter()
+        flt.SetInputData(poly)
+        flt.SetTransform(tf)
+        flt.Update()
+        return flt.GetOutput()
+
+    def get_transformed_screw_polydata(self, imp: PlacedImplant) -> Optional[vtk.vtkPolyData]:
+        if not imp.screw:
+            return None
+        poly = imp.raw_screw_polydata or generate_screw_polydata(imp.screw, imp.spec, imp.abutment)
         half_len = imp.spec.length_mm / 2.0
         tf = vtk.vtkTransform()
         tf.PostMultiply()
@@ -1061,7 +1203,54 @@ class ImplantPlacementManager:
                     if imp_id in self.slice_abutment_fill_actors_2d[view_name]:
                         self.slice_abutment_fill_actors_2d[view_name][imp_id].SetVisibility(False)
 
-                # 3. Prosthetic Crown
+                # 3. Abutment Screw
+                if imp.screw is not None and imp.abutment is not None:
+                    s_world_pd = self.get_transformed_screw_polydata(imp)
+                    s_cut = vtk.vtkCutter()
+                    s_cut.SetInputData(s_world_pd)
+                    s_cut.SetCutFunction(plane)
+                    s_cut.Update()
+                    s_poly_2d, s_filled_2d, s_has_cut = self._create_2d_slice_polys(s_cut.GetOutput(), view_name, cursor)
+
+                    sr, sg, sb = imp.screw.color_rgb
+                    if imp_id not in self.slice_screw_fill_actors_2d[view_name]:
+                        smf = vtk.vtkPolyDataMapper()
+                        saf = vtk.vtkActor()
+                        saf.SetMapper(smf)
+                        saf.GetProperty().SetColor(sr, sg, sb)
+                        saf.GetProperty().SetOpacity(0.9)
+                        saf.GetProperty().SetAmbient(1.0)
+                        saf.GetProperty().SetDiffuse(0.0)
+                        saf.GetProperty().SetLighting(False)
+                        ren.AddActor(saf)
+                        self.slice_screw_fill_actors_2d[view_name][imp_id] = saf
+                    saf_act = self.slice_screw_fill_actors_2d[view_name][imp_id]
+                    saf_act.GetProperty().SetColor(sr, sg, sb)
+                    saf_act.GetMapper().SetInputData(s_filled_2d)
+                    saf_act.SetVisibility(eff_vis and s_has_cut and s_filled_2d.GetNumberOfPolys() > 0)
+
+                    if imp_id not in self.slice_screw_actors_2d[view_name]:
+                        sml = vtk.vtkPolyDataMapper()
+                        sal = vtk.vtkActor()
+                        sal.SetMapper(sml)
+                        sal.GetProperty().SetColor(sr, sg, sb)
+                        sal.GetProperty().SetLineWidth(1.8)
+                        sal.GetProperty().SetAmbient(1.0)
+                        sal.GetProperty().SetDiffuse(0.0)
+                        sal.GetProperty().SetLighting(False)
+                        ren.AddActor(sal)
+                        self.slice_screw_actors_2d[view_name][imp_id] = sal
+                    sal_act = self.slice_screw_actors_2d[view_name][imp_id]
+                    sal_act.GetProperty().SetColor(sr, sg, sb)
+                    sal_act.GetMapper().SetInputData(s_poly_2d)
+                    sal_act.SetVisibility(eff_vis and s_has_cut)
+                else:
+                    if imp_id in self.slice_screw_actors_2d[view_name]:
+                        self.slice_screw_actors_2d[view_name][imp_id].SetVisibility(False)
+                    if imp_id in self.slice_screw_fill_actors_2d[view_name]:
+                        self.slice_screw_fill_actors_2d[view_name][imp_id].SetVisibility(False)
+
+                # 4. Prosthetic Crown
                 if imp.prosthetic is not None and imp.abutment is not None:
                     p_world_pd = self.get_transformed_prosthetic_polydata(imp)
                     p_cut = vtk.vtkCutter()
@@ -1112,10 +1301,11 @@ class ImplantPlacementManager:
         if not actor:
             return None
         for imp in self.implants.values():
-            if imp.actor_3d == actor or imp.abutment_actor == actor or imp.prosthetic_actor == actor:
+            if imp.actor_3d == actor or imp.abutment_actor == actor or imp.screw_actor == actor or imp.prosthetic_actor == actor:
                 return imp
             for d in [self.slice_actors_2d, self.slice_fill_actors_2d,
                       self.slice_abutment_actors_2d, self.slice_abutment_fill_actors_2d,
+                      self.slice_screw_actors_2d, self.slice_screw_fill_actors_2d,
                       self.slice_prosthetic_actors_2d, self.slice_prosthetic_fill_actors_2d]:
                 for view_dict in d.values():
                     if view_dict.get(imp.id) == actor:

@@ -119,6 +119,20 @@ class FeaPanel(QWidget):
         row_abut.addStretch()
         vbox_mesh.addLayout(row_abut)
 
+        # 스크류(Screw) 메쉬 크기
+        row_screw = QHBoxLayout()
+        lbl_screw = QLabel("스크류(Screw) (mm):", group_mesh)
+        lbl_screw.setFixedWidth(130)
+        row_screw.addWidget(lbl_screw)
+        self.spin_size_screw = QDoubleSpinBox(group_mesh)
+        self.spin_size_screw.setRange(0.1, 5.0)
+        self.spin_size_screw.setValue(0.35)
+        self.spin_size_screw.setSingleStep(0.05)
+        self.spin_size_screw.setFixedWidth(60)
+        row_screw.addWidget(self.spin_size_screw)
+        row_screw.addStretch()
+        vbox_mesh.addLayout(row_screw)
+
         # 보철물(Crown) 메쉬 크기
         row_crown = QHBoxLayout()
         lbl_crown = QLabel("보철물(Crown) (mm):", group_mesh)
@@ -310,6 +324,29 @@ class FeaPanel(QWidget):
         self.spin_load_margin.setValue(2.0)
         row_margin.addWidget(self.spin_load_margin)
         vbox_bc.addLayout(row_margin)
+
+        # 스크류 체결 예하중 (Bolt Preload) 설정
+        row_preload = QHBoxLayout()
+        self.chk_preload = QCheckBox("스크류 예하중(Preload) 적용", group_bc)
+        self.chk_preload.setChecked(True)
+        self.chk_preload.setToolTip("어버트먼트 스크류 조임 토크로 발생하는 축방향 인장 예하중을 적용합니다.")
+        self.chk_preload.setStyleSheet("font-weight: bold; color: #d1b87a;")
+        row_preload.addWidget(self.chk_preload)
+
+        lbl_pre_force = QLabel("예하중(N):", group_bc)
+        lbl_pre_force.setStyleSheet("font-size: 11px;")
+        row_preload.addWidget(lbl_pre_force)
+        self.spin_preload_force = QDoubleSpinBox(group_bc)
+        self.spin_preload_force.setRange(10.0, 1000.0)
+        self.spin_preload_force.setValue(200.0)
+        self.spin_preload_force.setSingleStep(10.0)
+        self.spin_preload_force.setFixedWidth(70)
+        self.spin_preload_force.setToolTip("스크류 체결 인장 예하중 (통상 150~300 N)")
+        row_preload.addWidget(self.spin_preload_force)
+        row_preload.addStretch()
+        vbox_bc.addLayout(row_preload)
+
+        self.chk_preload.toggled.connect(self.spin_preload_force.setEnabled)
 
         # 경계조건 검증 버튼
         self.btn_validate_bc = QPushButton("✔️ 경계조건 적용 및 검증", group_bc)
@@ -539,7 +576,11 @@ class FeaPanel(QWidget):
             mesh_algorithm_3d=self.combo_mesh_algo.currentData(),
             optimize_netgen=self.chk_optimize_netgen.isChecked(),
             mesh_size_abutment_mm=self.spin_size_abut.value(),
+            mesh_size_screw_mm=self.spin_size_screw.value(),
             mesh_size_crown_mm=self.spin_size_crown.value(),
+            screw_contact_tol_mm=0.20,
+            preload_enabled=self.chk_preload.isChecked(),
+            preload_force_n=self.spin_preload_force.value(),
         )
         self.btn_mesh.setEnabled(False)
         self.mesh_progress_bar.setVisible(True)
@@ -803,6 +844,8 @@ class FeaPanel(QWidget):
             fix_box=fix_box,
             load_position=load_pos,
             load_direction=load_dir,
+            preload_enabled=self.chk_preload.isChecked(),
+            preload_force_n=self.spin_preload_force.value(),
         )
 
     def _on_bc_validated(self, issues: list):

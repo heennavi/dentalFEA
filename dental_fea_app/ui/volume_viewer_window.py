@@ -1643,6 +1643,10 @@ class VolumeViewerWindow(QMainWindow):
                             self.render()
 
                 elif event.button() == Qt.MouseButton.RightButton:
+                    # 해석 결과 뷰 모드일 때는 우클릭 팝업 메뉴를 띄우지 않고 기본 카메라 줌 등으로 전달
+                    if getattr(self, "is_result_view_mode", False):
+                        return super().eventFilter(obj, event)
+
                     pos = event.position().toPoint()
                     screen_x = pos.x()
                     screen_y = self.vtkWidget.height() - pos.y()

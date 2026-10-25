@@ -33,6 +33,7 @@ from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPen, QPixmap
 from dental_fea_app.placement.implant_generator import (
     ImplantSpec, ImplantLibraryManager,
     AbutmentSpec, generate_abutment_polydata,
+    ScrewSpec, generate_screw_polydata,
     ProstheticSpec, generate_prosthetic_polydata,
     get_material_color_rgb, get_default_tooth_dimensions
 )
@@ -423,59 +424,65 @@ class ImplantSimulationDialog(QDialog):
         a_grid.setHorizontalSpacing(10)
         a_grid.setVerticalSpacing(8)
 
-        self.lbl_abut_bottom_desc = QLabel("하부 규격: 임플란트 직경 연동, Hex 돌기 3.0mm 하부 돌출", abut_box)
-        self.lbl_abut_bottom_desc.setStyleSheet("color: #94a3b8; font-size: 11px;")
-        a_grid.addWidget(self.lbl_abut_bottom_desc, 0, 0, 1, 3)
+        self.chk_auto_screw = QCheckBox("screw 자동 장착", abut_box)
+        self.chk_auto_screw.setChecked(True)
+        self.chk_auto_screw.setStyleSheet("color: #38bdf8; font-weight: bold; font-size: 12px; margin-bottom: 2px;")
+        self.chk_auto_screw.toggled.connect(self._on_abutment_param_changed)
+        a_grid.addWidget(self.chk_auto_screw, 0, 0, 1, 3)
 
-        a_grid.addWidget(QLabel("Collar Flare 각도:"), 1, 0)
+        self.lbl_abut_bottom_desc = QLabel("하부 규격: 내부 헥사(2.44mm) 정밀 체결, 내부 스크류 턱(Seat) 구비", abut_box)
+        self.lbl_abut_bottom_desc.setStyleSheet("color: #94a3b8; font-size: 11px;")
+        a_grid.addWidget(self.lbl_abut_bottom_desc, 1, 0, 1, 3)
+
+        a_grid.addWidget(QLabel("Collar Flare 각도:"), 2, 0)
         self.slider_collar_flare = QSlider(Qt.Orientation.Horizontal, abut_box)
         self.slider_collar_flare.setRange(5, 45)
         self.slider_collar_flare.setValue(30)
         self.lbl_flare_val = QLabel("30°", abut_box)
         self.lbl_flare_val.setStyleSheet("color: #38bdf8; font-weight: bold;")
         self.slider_collar_flare.valueChanged.connect(self._on_abutment_param_changed)
-        a_grid.addWidget(self.slider_collar_flare, 1, 1)
-        a_grid.addWidget(self.lbl_flare_val, 1, 2)
+        a_grid.addWidget(self.slider_collar_flare, 2, 1)
+        a_grid.addWidget(self.lbl_flare_val, 2, 2)
 
-        a_grid.addWidget(QLabel("Collar 길이:"), 2, 0)
+        a_grid.addWidget(QLabel("Collar 길이:"), 3, 0)
         self.slider_collar_len = QSlider(Qt.Orientation.Horizontal, abut_box)
         self.slider_collar_len.setRange(4, 20)
         self.slider_collar_len.setValue(8) # 4.0 mm
         self.lbl_collar_len_val = QLabel("4.0 mm", abut_box)
         self.lbl_collar_len_val.setStyleSheet("color: #38bdf8; font-weight: bold;")
         self.slider_collar_len.valueChanged.connect(self._on_abutment_param_changed)
-        a_grid.addWidget(self.slider_collar_len, 2, 1)
-        a_grid.addWidget(self.lbl_collar_len_val, 2, 2)
+        a_grid.addWidget(self.slider_collar_len, 3, 1)
+        a_grid.addWidget(self.lbl_collar_len_val, 3, 2)
 
-        a_grid.addWidget(QLabel("상부 (Morse) 길이:"), 3, 0)
+        a_grid.addWidget(QLabel("상부 (Morse) 길이:"), 4, 0)
         self.slider_upper_len = QSlider(Qt.Orientation.Horizontal, abut_box)
         self.slider_upper_len.setRange(6, 40)
         self.slider_upper_len.setValue(10) # 5.0 mm
         self.lbl_upper_len_val = QLabel("5.0 mm", abut_box)
         self.lbl_upper_len_val.setStyleSheet("color: #38bdf8; font-weight: bold;")
         self.slider_upper_len.valueChanged.connect(self._on_abutment_param_changed)
-        a_grid.addWidget(self.slider_upper_len, 3, 1)
-        a_grid.addWidget(self.lbl_upper_len_val, 3, 2)
+        a_grid.addWidget(self.slider_upper_len, 4, 1)
+        a_grid.addWidget(self.lbl_upper_len_val, 4, 2)
 
-        a_grid.addWidget(QLabel("Angulation 기울기:"), 4, 0)
+        a_grid.addWidget(QLabel("Angulation 기울기:"), 5, 0)
         self.slider_angulation = QSlider(Qt.Orientation.Horizontal, abut_box)
         self.slider_angulation.setRange(0, 30)
         self.slider_angulation.setValue(0)
         self.lbl_angulation_val = QLabel("0°", abut_box)
         self.lbl_angulation_val.setStyleSheet("color: #38bdf8; font-weight: bold;")
         self.slider_angulation.valueChanged.connect(self._on_abutment_param_changed)
-        a_grid.addWidget(self.slider_angulation, 4, 1)
-        a_grid.addWidget(self.lbl_angulation_val, 4, 2)
+        a_grid.addWidget(self.slider_angulation, 5, 1)
+        a_grid.addWidget(self.lbl_angulation_val, 5, 2)
 
-        a_grid.addWidget(QLabel("기울기 방향 (회전):"), 5, 0)
+        a_grid.addWidget(QLabel("기울기 방향 (회전):"), 6, 0)
         self.slider_ang_dir = QSlider(Qt.Orientation.Horizontal, abut_box)
         self.slider_ang_dir.setRange(0, 72)
         self.slider_ang_dir.setValue(0)
         self.lbl_ang_dir_val = QLabel("0°", abut_box)
         self.lbl_ang_dir_val.setStyleSheet("color: #38bdf8; font-weight: bold;")
         self.slider_ang_dir.valueChanged.connect(self._on_abutment_param_changed)
-        a_grid.addWidget(self.slider_ang_dir, 5, 1)
-        a_grid.addWidget(self.lbl_ang_dir_val, 5, 2)
+        a_grid.addWidget(self.slider_ang_dir, 6, 1)
+        a_grid.addWidget(self.lbl_ang_dir_val, 6, 2)
 
         c_box = QHBoxLayout()
         c_box.addWidget(QLabel("색상:"))
@@ -490,7 +497,7 @@ class ImplantSimulationDialog(QDialog):
         c_box.addWidget(self.rb_abut_zirconia)
         c_box.addWidget(self.rb_abut_metal)
         c_box.addStretch()
-        a_grid.addLayout(c_box, 6, 0, 1, 3)
+        a_grid.addLayout(c_box, 7, 0, 1, 3)
 
         body_layout.addWidget(abut_box, 3)
 
@@ -917,6 +924,7 @@ class ImplantSimulationDialog(QDialog):
         • 위치: ({sel_imp.position[0]:.1f}, {sel_imp.position[1]:.1f}, {sel_imp.position[2]:.1f}) mm<br>
         • 각도: Yaw={sel_imp.orientation[0]:.1f}°, Pitch={sel_imp.orientation[1]:.1f}°, Roll={sel_imp.orientation[2]:.1f}°<br>
         • Abutment: {'장착됨' if sel_imp.abutment else '없음'}<br>
+        • Abutment Screw: {'장착됨 (' + sel_imp.screw.thread_name + ')' if sel_imp.screw else '없음'}<br>
         • 보철물: {f'치아 #{sel_imp.prosthetic.tooth_number}' if sel_imp.prosthetic else '없음'}
         """
         self.txt_placed_detail.setHtml(detail_text)
@@ -1103,7 +1111,15 @@ class ImplantSimulationDialog(QDialog):
         sel_imp = self.placement_mgr.get_selected_implant()
         spec = self._get_current_abutment_spec()
         poly = generate_abutment_polydata(spec, sel_imp.spec if sel_imp else None)
-        self.abutment_3d_view.set_polydata(poly, force_reset_camera=True)
+        if hasattr(self, "chk_auto_screw") and self.chk_auto_screw.isChecked():
+            screw_pd = generate_screw_polydata(None, sel_imp.spec if sel_imp else None, spec)
+            appender = vtk.vtkAppendPolyData()
+            appender.AddInputData(poly)
+            appender.AddInputData(screw_pd)
+            appender.Update()
+            self.abutment_3d_view.set_polydata(appender.GetOutput(), force_reset_camera=True)
+        else:
+            self.abutment_3d_view.set_polydata(poly, force_reset_camera=True)
         ar, ag, ab = spec.color_rgb
         self.abutment_3d_view.actor.GetProperty().SetColor(ar, ag, ab)
 
@@ -1113,7 +1129,8 @@ class ImplantSimulationDialog(QDialog):
             QMessageBox.warning(self, "경고", "Abutment를 장착할 임플란트를 먼저 선택해주세요.")
             return
         spec = self._get_current_abutment_spec()
-        self.placement_mgr.attach_abutment(sel_imp.id, spec)
+        auto_screw = self.chk_auto_screw.isChecked() if hasattr(self, "chk_auto_screw") else True
+        self.placement_mgr.attach_abutment(sel_imp.id, spec, auto_screw=auto_screw)
         self.refresh_placed_implants_table()
         self.alignment_changed.emit()
 
@@ -1130,7 +1147,8 @@ class ImplantSimulationDialog(QDialog):
         if not sel_imp:
             return
         spec = self._get_current_abutment_spec()
-        self.placement_mgr.replace_abutment(sel_imp.id, spec)
+        auto_screw = self.chk_auto_screw.isChecked() if hasattr(self, "chk_auto_screw") else True
+        self.placement_mgr.replace_abutment(sel_imp.id, spec, auto_screw=auto_screw)
         self.refresh_placed_implants_table()
         self.alignment_changed.emit()
 

@@ -5,7 +5,7 @@ ResultViewController (3D VTK renderer), and ResultProbe (3D peak/nodal probe).
 """
 
 import os
-from typing import Optional, Tuple, Dict, Any
+from typing import Optional, Tuple, Dict, Any, Callable
 import numpy as np
 from PySide6.QtCore import QObject, Signal
 from PySide6.QtWidgets import QFileDialog, QMessageBox
@@ -53,6 +53,7 @@ class ResultController(QObject):
         self.panel = panel
         self.view_controller = view_controller
         self.probe = probe or ResultProbe(self)
+        self.open_3d_viewer_callback: Optional[Callable[[], None]] = None
 
         self._current_worker: Optional[ResultLoadWorker] = None
         self._recalc_worker: Optional[PeriImplantRecalcWorker] = None
@@ -351,6 +352,13 @@ class ResultController(QObject):
                 self.panel.lbl_probe_info.setText("⚠️ 3D 뷰어가 열려있지 않습니다. 3D 뷰어를 먼저 열어주십시오.")
             return
 
+        if part_name in ("NONE", "none", "보이지 않기", "hide"):
+            if hasattr(self.probe, "clear_max_marker"):
+                self.probe.clear_max_marker()
+            if self.panel is not None:
+                self.panel.lbl_probe_info.setText("최대 응력 마커를 숨겼습니다.")
+            return
+
         actual_part = None if part_name == "ALL" else part_name
         if hasattr(self.probe, "mark_maximum"):
             self.probe.mark_maximum(field=field, part_name=actual_part)
@@ -358,14 +366,43 @@ class ResultController(QObject):
             self.probe.mark_max_stress(field=field, part_name=actual_part)
 
     def set_probe_enabled(self, enabled: bool) -> None:
+        if enabled:
+            # 1. 3D 뷰어 창이 아직 열리지 않았거나 닫힌 경우 자동 오픈
+            if (self.view_controller is None or self.view_controller.renderer is None) and callable(self.open_3d_viewer_callback):
+                try:
+                    self.open_3d_viewer_callback()
+                except Exception:
+                    pass
+
+            # 2. 3D 뷰어 창이 존재하면 결과 모드 보장 및 전면 활성화
+            if self.view_controller is not None and getattr(self.view_controller, "window", None) is not None:
+                win = self.view_controller.window
+                try:
+                    if hasattr(win, "set_result_view_mode"):
+                        win.set_result_view_mode(True)
+                    if hasattr(win, "show"):
+                        win.show()
+                    if hasattr(win, "raise_"):
+                        win.raise_()
+                    if hasattr(win, "activateWindow"):
+                        win.activateWindow()
+                except Exception:
+                    pass
+
         if hasattr(self.probe, "enable_click_probe"):
             self.probe.enable_click_probe(enabled)
         elif hasattr(self.probe, "set_probe_enabled"):
             self.probe.set_probe_enabled(enabled)
 
-        if enabled and (self.view_controller is None or self.view_controller.renderer is None):
+        if enabled:
             if self.panel is not None:
-                self.panel.lbl_probe_info.setText("ℹ️ 3D 클릭 프로브 활성화됨 (3D 뷰어 창에서 원하는 메쉬 표면을 클릭하세요)")
+                if self.view_controller is None or self.view_controller.renderer is None:
+                    self.panel.lbl_probe_info.setText("ℹ️ 3D 클릭 프로브 활성화됨 (3D 뷰어 창에서 원하는 메쉬 표면을 클릭하세요)")
+                else:
+                    self.panel.lbl_probe_info.setText("ℹ️ 3D 클릭 프로브 활성화됨 (3D 뷰어의 메쉬 표면을 클릭하세요)")
+        else:
+            if self.panel is not None and not self.panel.lbl_probe_info.text().startswith("["):
+                self.panel.lbl_probe_info.setText("절점을 클릭하거나 최대 위치를 표시하십시오.")
 
     # -------------------------------------------------------------------------
     # 내보내기 및 번들 저장/불러오기 메서드 (Step 4-7)

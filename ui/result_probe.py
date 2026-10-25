@@ -11,11 +11,13 @@ closest node lookup, peak stress localization, and VTK marker/caption management
 - Modulus: MPa
 """
 
+import time
 from typing import Optional, Dict, Any, Sequence, Tuple
 import numpy as np
 import vtk
 from vtk.util import numpy_support
-from PySide6.QtCore import QObject, Signal
+from PySide6.QtCore import QObject, Signal, QEvent, Qt
+from PySide6.QtGui import QCursor
 
 from ui.result_view_controller import ResultViewController, FIELD_DISPLAY_CONFIG
 from postprocess.peri_implant import max_stress_location
@@ -39,14 +41,18 @@ class ResultProbe(QObject):
         self._controller: Optional[ResultViewController] = None
         self._renderer: Optional[vtk.vtkRenderer] = None
         self._interactor: Optional[vtk.vtkRenderWindowInteractor] = None
+        self._vtk_widget: Optional[QObject] = None
 
         # Observer 태그 관리
         self._observer_tags: list = []
 
-        # 마우스 드래그 감지 상태
+        # 마우스 드래그 감지 상태 (Qt 논리 좌표와 VTK 픽셀 좌표 분리)
         self._press_pos: Tuple[int, int] = (0, 0)
+        self._qt_press_pos: Optional[Tuple[int, int]] = None
+        self._vtk_press_pos: Optional[Tuple[int, int]] = None
         self._press_ctrl: bool = False
         self._probe_enabled: bool = False
+        self._last_pick_timestamp: float = 0.0
 
         # VTK 액터 관리
         self._probe_sphere_actor: Optional[vtk.vtkActor] = None
@@ -69,26 +75,53 @@ class ResultProbe(QObject):
         self._controller = controller
         self._renderer = controller.renderer
 
-        # Interactor 탐색
+        # Qt 위젯 eventFilter 설치 (Qt 레벨 마우스 클릭 감지)
+        if controller.window is not None and hasattr(controller.window, "vtkWidget"):
+            self._vtk_widget = controller.window.vtkWidget
+            try:
+                self._vtk_widget.installEventFilter(self)
+            except Exception:
+                pass
+
+        # VTK Interactor 탐색 및 옵저버 바인딩
         iren = None
         if controller.window is not None and hasattr(controller.window, "vtkWidget"):
-            rw = controller.window.vtkWidget.GetRenderWindow()
-            if rw is not None:
-                iren = rw.GetInteractor()
-        elif self._renderer is not None:
+            vtk_w = controller.window.vtkWidget
+            if hasattr(vtk_w, "GetRenderWindow"):
+                rw = vtk_w.GetRenderWindow()
+                if rw is not None:
+                    iren = rw.GetInteractor()
+        if iren is None and self._renderer is not None:
             rw = self._renderer.GetRenderWindow()
             if rw is not None:
                 iren = rw.GetInteractor()
 
         self._interactor = iren
         if self._interactor is not None:
+            try:
+                if not self._interactor.GetEnabled():
+                    self._interactor.Enable()
+            except Exception:
+                pass
             tag1 = self._interactor.AddObserver("LeftButtonPressEvent", self._on_left_button_press, 1.0)
             tag2 = self._interactor.AddObserver("LeftButtonReleaseEvent", self._on_left_button_release, 1.0)
             self._observer_tags.extend([tag1, tag2])
 
+        # 프로브 모드가 활성화되어 있다면 커서 및 상태바 즉시 갱신
+        if self._probe_enabled:
+            self.enable_click_probe(True)
+
     def detach(self) -> None:
         """Detach from controller, remove markers, and unbind interactor observers."""
         self.clear_markers()
+
+        if self._vtk_widget is not None:
+            try:
+                self._vtk_widget.removeEventFilter(self)
+                self._vtk_widget.setCursor(Qt.CursorShape.ArrowCursor)
+            except Exception:
+                pass
+            self._vtk_widget = None
 
         if self._interactor is not None:
             for tag in self._observer_tags:
@@ -100,27 +133,85 @@ class ResultProbe(QObject):
         self._interactor = None
 
     def enable_click_probe(self, enabled: bool) -> None:
-        """Enable or disable single-click probing mode."""
+        """Enable or disable single-click probing mode and update cursor and status bar."""
         self._probe_enabled = bool(enabled)
+
+        # 프로브 모드 비활성화 시 화면에 표시된 값(캡션)과 노란 구 즉시 숨김
+        if not self._probe_enabled:
+            self.clear_probe_marker()
+
+        # 3D 위젯 마우스 커서 갱신
+        if self._vtk_widget is not None:
+            try:
+                if self._probe_enabled:
+                    self._vtk_widget.setCursor(Qt.CursorShape.CrossCursor)
+                else:
+                    self._vtk_widget.setCursor(Qt.CursorShape.ArrowCursor)
+            except Exception:
+                pass
+
+        # 3D 뷰어 창 상태바 안내
+        if self._controller is not None and getattr(self._controller, "window", None) is not None:
+            win = self._controller.window
+            if hasattr(win, "statusBar") and win.statusBar() is not None:
+                try:
+                    if self._probe_enabled:
+                        win.statusBar().showMessage("🎯 3D 클릭 프로브 모드 활성화됨 (메쉬 표면을 클릭하여 절점 응력/변위 확인)")
+                    else:
+                        win.statusBar().clearMessage()
+                except Exception:
+                    pass
 
     # -------------------------------------------------------------------------
     # 마우스 이벤트 핸들러 (드래그 회전 유지 및 클릭 판별)
     # -------------------------------------------------------------------------
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        """
+        Intercept Qt mouse events on vtkWidget to reliably detect clicks for probing,
+        bypassing VTK C++ interactor event delivery discrepancies.
+        """
+        if watched == self._vtk_widget and self._vtk_widget is not None:
+            etype = event.type()
+            if etype == QEvent.Type.MouseButtonPress and event.button() == Qt.MouseButton.LeftButton:
+                pos = event.position().toPoint()
+                self._qt_press_pos = (pos.x(), pos.y())
+                self._press_pos = self._qt_press_pos  # 하위 호환성 유지
+                self._press_ctrl = bool(event.modifiers() & Qt.KeyboardModifier.ControlModifier)
+
+            elif etype == QEvent.Type.MouseButtonRelease and event.button() == Qt.MouseButton.LeftButton:
+                pos = event.position().toPoint()
+                press_pos = self._qt_press_pos or self._press_pos
+                self._qt_press_pos = None
+
+                dx = pos.x() - press_pos[0]
+                dy = pos.y() - press_pos[1]
+                dist = (dx * dx + dy * dy) ** 0.5
+
+                if dist <= 6.0 and (self._probe_enabled or self._press_ctrl):
+                    scale = getattr(self._vtk_widget, "_getPixelRatio", lambda: 1.0)()
+                    h = self._vtk_widget.height()
+                    vtk_x = int(round(pos.x() * scale))
+                    vtk_y = int(round((h - pos.y() - 1) * scale))
+                    self._perform_pick(vtk_x, vtk_y)
+
+        return super().eventFilter(watched, event)
+
     def _on_left_button_press(self, caller: Any, event: str) -> None:
-        """Record press position and control key state; do not abort to preserve mouse drag."""
+        """Record VTK press position and control key state; do not abort to preserve mouse drag."""
         if caller is not None and hasattr(caller, "GetEventPosition"):
-            self._press_pos = caller.GetEventPosition()
+            self._vtk_press_pos = caller.GetEventPosition()
             self._press_ctrl = bool(caller.GetControlKey())
 
     def _on_left_button_release(self, caller: Any, event: str) -> None:
         """Evaluate click displacement; trigger probing if displacement <= 6 pixels."""
-        if caller is None or not hasattr(caller, "GetEventPosition"):
+        if caller is None or not hasattr(caller, "GetEventPosition") or self._vtk_press_pos is None:
             return
 
         rel_pos = caller.GetEventPosition()
-        dx = rel_pos[0] - self._press_pos[0]
-        dy = rel_pos[1] - self._press_pos[1]
+        dx = rel_pos[0] - self._vtk_press_pos[0]
+        dy = rel_pos[1] - self._vtk_press_pos[1]
         dist = (dx * dx + dy * dy) ** 0.5
+        self._vtk_press_pos = None
 
         # 드래그 거리 6px 이하이고 (프로브 모드 ON 또는 Ctrl 키 눌림) 상태일 때 실행
         if dist <= 6.0 and (self._probe_enabled or self._press_ctrl):
@@ -131,32 +222,98 @@ class ResultProbe(QObject):
         if self._renderer is None or self._controller is None:
             return
 
-        # 1. 메쉬 표면(Cell) 레이캐스팅 피킹 (삼각형 면 위 클릭 감지)
+        # 중복 피킹 방지 (동일 클릭에 대한 짧은 간격 중복 호출 방지)
+        now = time.time()
+        if now - self._last_pick_timestamp < 0.08:
+            return
+        self._last_pick_timestamp = now
+
+        # 현재 렌더러에 표시 중인 활성 결과 액터 수집
+        actors = self._controller._actors if self._controller else {}
+        active_actors = {name: act for name, act in actors.items() if act.GetVisibility()}
+        if not active_actors:
+            return
+
+        hit_part = None
+        pick_pos = None
+
+        # 1. 메쉬 표면(Cell) 레이캐스팅 피킹 (허용오차 0.015, 파트 액터 목록 우선 한정)
         cell_picker = vtk.vtkCellPicker()
-        cell_picker.SetTolerance(0.005)
-        pick_success = bool(cell_picker.Pick(float(x), float(y), 0.0, self._renderer))
-        pick_pos = cell_picker.GetPickPosition() if pick_success else None
+        cell_picker.SetTolerance(0.015)
+        cell_picker.InitializePickList()
+        for act in active_actors.values():
+            cell_picker.AddPickList(act)
+        cell_picker.PickFromListOn()
 
-        # 2. CellPicker 실패 시 PointPicker fallback
-        if not pick_success:
-            point_picker = vtk.vtkPointPicker()
-            point_picker.SetTolerance(0.02)
-            if point_picker.Pick(float(x), float(y), 0.0, self._renderer):
-                pick_pos = point_picker.GetPickPosition()
-                pick_success = True
+        if cell_picker.Pick(float(x), float(y), 0.0, self._renderer):
+            hit_act = cell_picker.GetActor()
+            for name, act in active_actors.items():
+                if act == hit_act:
+                    hit_part = name
+                    break
+            pick_pos = cell_picker.GetPickPosition()
 
-        # 3. PropPicker fallback
-        if not pick_success:
+        # 2. CellPicker 실패 시 PropPicker + WorldPointPicker fallback (깊이 버퍼 기반 3D 좌표)
+        if pick_pos is None:
             prop_picker = vtk.vtkPropPicker()
-            if prop_picker.Pick(float(x), float(y), 0.0, self._renderer):
-                pick_pos = prop_picker.GetPickPosition()
-                pick_success = True
+            prop_picker.InitializePickList()
+            for act in active_actors.values():
+                prop_picker.AddPickList(act)
+            prop_picker.PickFromListOn()
 
-        if pick_success and pick_pos is not None:
-            probe_data = self.find_nearest_node(pick_pos)
+            if prop_picker.Pick(float(x), float(y), 0.0, self._renderer):
+                hit_act = prop_picker.GetViewProp()
+                for name, act in active_actors.items():
+                    if act == hit_act:
+                        hit_part = name
+                        break
+                wp = vtk.vtkWorldPointPicker()
+                wp.Pick(float(x), float(y), 0.0, self._renderer)
+                pick_pos = wp.GetPickPosition()
+
+        # 3. 추가 fallback: vtkPointPicker (허용오차 0.03)
+        if pick_pos is None:
+            point_picker = vtk.vtkPointPicker()
+            point_picker.SetTolerance(0.03)
+            point_picker.InitializePickList()
+            for act in active_actors.values():
+                point_picker.AddPickList(act)
+            point_picker.PickFromListOn()
+            if point_picker.Pick(float(x), float(y), 0.0, self._renderer):
+                hit_act = point_picker.GetActor()
+                for name, act in active_actors.items():
+                    if act == hit_act:
+                        hit_part = name
+                        break
+                pick_pos = point_picker.GetPickPosition()
+
+        if pick_pos is not None:
+            probe_data = self.find_nearest_node(pick_pos, part_name=hit_part)
+            if probe_data is None and hit_part is not None:
+                probe_data = self.find_nearest_node(pick_pos, part_name=None)
+
             if probe_data is not None:
                 self._update_probe_marker(probe_data)
                 self.probed.emit(probe_data)
+                self._notify_status_bar(probe_data)
+
+    def _notify_status_bar(self, probe_data: dict) -> None:
+        """Update 3D viewer window status bar with probed node info."""
+        if self._controller is not None and getattr(self._controller, "window", None) is not None:
+            win = self._controller.window
+            if hasattr(win, "statusBar") and win.statusBar() is not None:
+                try:
+                    p_name = probe_data.get("part", "")
+                    node = probe_data.get("node", -1)
+                    vm = probe_data.get("von_mises")
+                    vm_str = f"{vm:.2f} MPa" if vm is not None else "--"
+                    u_mag = probe_data.get("u_mag", 0.0)
+                    win.statusBar().showMessage(
+                        f"🎯 [{p_name}] 절점 #{node} | von Mises: {vm_str} | 변위: {u_mag:.4f} mm",
+                        5000,
+                    )
+                except Exception:
+                    pass
 
     # -------------------------------------------------------------------------
     # 최근접 절점 검색 및 데이터 수집 (오프스크린 단위 테스트 핵심 함수)
@@ -377,6 +534,14 @@ class ResultProbe(QObject):
         Returns:
             dict: Max location metadata or None if no valid data.
         """
+        if self._controller is not None or self._controller._model is None or self._controller._rs is None:
+            pass
+
+        # "보이지 않기" (NONE) 선택 시 마커 제거 후 종료
+        if part_name in ("NONE", "none", "보이지 않기", "hide"):
+            self.clear_max_marker()
+            return None
+
         if self._controller is None or self._controller._model is None or self._controller._rs is None:
             return None
 
@@ -391,12 +556,7 @@ class ResultProbe(QObject):
             return None
 
         # 이전 최대값 마커 제거
-        if self._max_sphere_actor is not None and self._renderer is not None:
-            self._renderer.RemoveActor(self._max_sphere_actor)
-            self._max_sphere_actor = None
-        if self._max_caption_actor is not None and self._renderer is not None:
-            self._renderer.RemoveActor(self._max_caption_actor)
-            self._max_caption_actor = None
+        self.clear_max_marker()
 
         coord = max_info["coord"]
         val = max_info["value"]
@@ -461,21 +621,39 @@ class ResultProbe(QObject):
         """Alias for mark_maximum for compatibility with ResultController."""
         return self.mark_maximum(field=field, part_name=part_name, focus_camera=focus_camera)
 
-    def clear_markers(self) -> None:
-        """Remove all probe and maximum markers and labels from the renderer."""
+    def clear_probe_marker(self) -> None:
+        """Remove probe sphere marker (yellow) and caption from the renderer."""
+        changed = False
         if self._renderer is not None:
             if self._probe_sphere_actor is not None:
                 self._renderer.RemoveActor(self._probe_sphere_actor)
                 self._probe_sphere_actor = None
+                changed = True
             if self._probe_caption_actor is not None:
                 self._renderer.RemoveActor(self._probe_caption_actor)
                 self._probe_caption_actor = None
+                changed = True
+
+        if changed and self._controller is not None:
+            self._controller._render()
+
+    def clear_max_marker(self) -> None:
+        """Remove maximum stress sphere marker (red) and caption from the renderer."""
+        changed = False
+        if self._renderer is not None:
             if self._max_sphere_actor is not None:
                 self._renderer.RemoveActor(self._max_sphere_actor)
                 self._max_sphere_actor = None
+                changed = True
             if self._max_caption_actor is not None:
                 self._renderer.RemoveActor(self._max_caption_actor)
                 self._max_caption_actor = None
+                changed = True
 
-        if self._controller is not None:
+        if changed and self._controller is not None:
             self._controller._render()
+
+    def clear_markers(self) -> None:
+        """Remove all probe and maximum markers and labels from the renderer."""
+        self.clear_probe_marker()
+        self.clear_max_marker()

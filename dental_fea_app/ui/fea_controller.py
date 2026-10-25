@@ -8,6 +8,7 @@ import os
 import logging
 from typing import Optional, List, Dict, Any, Tuple
 import numpy as np
+import vtk
 from vtk.util import numpy_support
 from PySide6.QtCore import QObject, Signal
 
@@ -240,6 +241,19 @@ class FeaController(QObject):
                 elem_mat_dict[crown_part.name] = np.full((len(crown_part.elements),), cr_offset, dtype=np.int64)
                 all_materials.append(crown_mat)
 
+            screw_part = mesh_model.get_part("screw")
+            if screw_part is not None:
+                sc_cfg = preset.get("screw_titanium", preset.get("titanium", {"E": 110000.0, "nu": 0.34, "density": 4.5e-9}))
+                screw_mat = MaterialDef(
+                    name="material_screw",
+                    E=float(sc_cfg["E"]),
+                    nu=float(sc_cfg["nu"]),
+                    density=float(sc_cfg.get("density", 4.5e-9)),
+                )
+                sc_offset = len(all_materials)
+                elem_mat_dict["screw"] = np.full((len(screw_part.elements),), sc_offset, dtype=np.int64)
+                all_materials.append(screw_mat)
+
             final_assignment = MaterialAssignment(
                 element_material=elem_mat_dict,
                 materials=all_materials,
@@ -281,6 +295,8 @@ class FeaController(QObject):
         fix_box: Optional[Tuple[float, float, float, float, float, float]] = None,
         load_position: Optional[Tuple[float, float, float]] = None,
         load_direction: Optional[Tuple[float, float, float]] = None,
+        preload_enabled: bool = False,
+        preload_force_n: float = 200.0,
     ) -> List[str]:
         """
         Configure bottom/region fixation constraint and occlusal force load.
@@ -380,7 +396,6 @@ class FeaController(QObject):
                     tilt_azimuth_deg=azimuth,
                 )
 
-
             load_dict = {
                 "name": "OCCLUSAL_FORCE",
                 "part": target_part.name,
@@ -391,9 +406,63 @@ class FeaController(QObject):
                 "angle_deg": float(angle),
             }
 
+            loads_list = [load_dict]
+
+            # 3. 스크류 체결 예하중(Preload) 설정 (옵션 활성화 시)
+            screw_part = mesh_model.get_part("screw")
+            if preload_enabled and screw_part is not None and float(preload_force_n) > 0.0:
+                s_nodes = screw_part.nodes
+                axis = np.array([0.0, 0.0, -1.0])
+                mgr = getattr(self.state_mgr, "implant_placement_mgr", None)
+                if mgr and mgr.implants:
+                    imp = next(iter(mgr.implants.values()))
+                    rot_tf = vtk.vtkTransform()
+                    rot_tf.PostMultiply()
+                    rot_tf.RotateZ(imp.orientation[0])
+                    rot_tf.RotateX(imp.orientation[1])
+                    rot_tf.RotateY(imp.orientation[2])
+                    ax = np.array(rot_tf.TransformVector(0.0, 0.0, -1.0))
+                    ax_norm = np.linalg.norm(ax)
+                    if ax_norm > 1e-6:
+                        axis = ax / ax_norm
+
+                projs = np.dot(s_nodes, axis)
+                h_min, h_max = float(np.min(projs)), float(np.max(projs))
+                H = max(1e-4, h_max - h_min)
+
+                # 헤드 안착턱 부근 (하향 압착력: axis * F_pre)
+                head_mask = (projs <= h_min + 0.38 * H) & (projs >= h_min + 0.08 * H)
+                if not np.any(head_mask):
+                    head_mask = (projs <= h_min + 0.38 * H)
+                head_nids = np.where(head_mask)[0].astype(np.int64)
+
+                # 나사산 체결부 (상향 인장력: -axis * F_pre)
+                thread_mask = (projs >= h_max - 0.40 * H)
+                thread_nids = np.where(thread_mask)[0].astype(np.int64)
+
+                f_pre = float(preload_force_n)
+                f_head = tuple(float(v) for v in (axis * f_pre))
+                f_thread = tuple(float(v) for v in (-axis * f_pre))
+
+                if len(head_nids) > 0 and len(thread_nids) > 0:
+                    loads_list.append({
+                        "name": "PRELOAD_SCREW_HEAD",
+                        "part": "screw",
+                        "node_ids": head_nids,
+                        "force_N": f_head,
+                        "magnitude_N": f_pre,
+                    })
+                    loads_list.append({
+                        "name": "PRELOAD_SCREW_THREAD",
+                        "part": "screw",
+                        "node_ids": thread_nids,
+                        "force_N": f_thread,
+                        "magnitude_N": f_pre,
+                    })
+
             bc_set = BoundaryConditionSet(
                 fixed_node_sets=[fix_dict],
-                loads=[load_dict],
+                loads=loads_list,
             )
             self.state_mgr.set_bc_set(bc_set)
 
@@ -449,9 +518,12 @@ class FeaController(QObject):
             else:
                 mat_dict = {}
 
+            from meshing.quality_checker import clean_mesh_model
+            clean_model = clean_mesh_model(mesh_model)
+
             write_inp(
                 path=output_path,
-                model=mesh_model,
+                model=clean_model,
                 materials=mat_dict,
                 bc=bc_set,
                 ties=ties or [],

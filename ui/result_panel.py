@@ -326,6 +326,8 @@ class ResultPanel(QWidget):
         row_peak = QHBoxLayout()
         self.combo_max_part = QComboBox(group)
         self.combo_max_part.addItem("전체 모델", "ALL")
+        self.combo_max_part.addItem("보이지 않기", "NONE")
+        self.combo_max_part.currentIndexChanged.connect(self._on_max_part_combo_changed)
         row_peak.addWidget(self.combo_max_part)
 
         self.btn_mark_max = QPushButton("최대 응력 위치 표시", group)
@@ -533,10 +535,13 @@ class ResultPanel(QWidget):
             self._rebuild_part_list(model)
 
             # 최대 응력 파트 콤보 갱신
+            self.combo_max_part.blockSignals(True)
             self.combo_max_part.clear()
             self.combo_max_part.addItem("전체 모델", "ALL")
+            self.combo_max_part.addItem("보이지 않기", "NONE")
             for part in model.parts:
                 self.combo_max_part.addItem(part.name, part.name)
+            self.combo_max_part.blockSignals(False)
 
             # 통계 표 갱신
             self._update_stats_table(stats, model)
@@ -749,6 +754,14 @@ class ResultPanel(QWidget):
         offset_mm = float(self.slider_clip_pos.value())
         self.clip_changed.emit(enabled, axis_str, offset_mm)
 
+    def _on_max_part_combo_changed(self, index: int) -> None:
+        if self._is_updating:
+            return
+        part = self.combo_max_part.currentData()
+        if part == "NONE":
+            field = self.combo_field.currentData()
+            self.mark_max_requested.emit(field, "NONE")
+
     def _on_mark_max_clicked(self) -> None:
         field = self.combo_field.currentData()
         part = self.combo_max_part.currentData()
@@ -756,4 +769,6 @@ class ResultPanel(QWidget):
 
     def _on_probe_toggled(self, checked: bool) -> None:
         self.btn_probe_toggle.setText("3D 클릭 프로브 모드 끄기" if checked else "3D 클릭 프로브 모드 켜기")
+        if not checked:
+            self.lbl_probe_info.setText("절점을 클릭하거나 최대 위치를 표시하십시오.")
         self.probe_toggled.emit(checked)
