@@ -52,6 +52,17 @@ from .iso14801 import (
     ISO14801Config,
     run_iso14801_pipeline,
 )
+from .notch_benchmark import (
+    NotchSpec,
+    NotchTheory,
+    NotchFEAResult,
+    NotchBenchmarkResult,
+    calculate_notch_theory,
+    calculate_notch_sensitivity,
+    build_notched_plate_mesh,
+    build_notch_model_and_bc,
+    run_notch_benchmark,
+)
 
 __all__ = [
     # models
@@ -94,6 +105,16 @@ __all__ = [
     "ISO14801LoadMode",
     "ISO14801Config",
     "run_iso14801_pipeline",
+    # notch_benchmark
+    "NotchSpec",
+    "NotchTheory",
+    "NotchFEAResult",
+    "NotchBenchmarkResult",
+    "calculate_notch_theory",
+    "calculate_notch_sensitivity",
+    "build_notched_plate_mesh",
+    "build_notch_model_and_bc",
+    "run_notch_benchmark",
 ]
 
 
