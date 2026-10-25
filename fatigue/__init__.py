@@ -50,6 +50,17 @@ from .cantilever_benchmark import (
 from .iso14801 import (
     ISO14801LoadMode,
     ISO14801Config,
+    ISO14801SetupSpec,
+    ISO14801ValidationReport,
+    FatigueHotspot,
+    LiteratureBenchmarkComparison,
+    ISO14801BatchResult,
+    validate_iso14801_setup,
+    build_iso14801_benchmark_assembly,
+    identify_fatigue_hotspot,
+    calculate_predicted_fatigue_limit_load,
+    compare_with_literature_benchmark,
+    run_iso14801_batch_case,
     run_iso14801_pipeline,
 )
 from .notch_benchmark import (
@@ -115,6 +126,17 @@ __all__ = [
     # iso14801
     "ISO14801LoadMode",
     "ISO14801Config",
+    "ISO14801SetupSpec",
+    "ISO14801ValidationReport",
+    "FatigueHotspot",
+    "LiteratureBenchmarkComparison",
+    "ISO14801BatchResult",
+    "validate_iso14801_setup",
+    "build_iso14801_benchmark_assembly",
+    "identify_fatigue_hotspot",
+    "calculate_predicted_fatigue_limit_load",
+    "compare_with_literature_benchmark",
+    "run_iso14801_batch_case",
     "run_iso14801_pipeline",
     # notch_benchmark
     "NotchSpec",

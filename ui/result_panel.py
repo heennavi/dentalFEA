@@ -107,6 +107,10 @@ class ResultPanel(QWidget):
         self.group_stats = self._create_stats_section()
         self.vbox_content.addWidget(self.group_stats)
 
+        # 섹션 3-1. ISO 14801 피로 평가 요약
+        self.group_fatigue = self._create_fatigue_section()
+        self.vbox_content.addWidget(self.group_fatigue)
+
         # 섹션 4. 내보내기
         self.group_export = self._create_export_section()
         self.vbox_content.addWidget(self.group_export)
@@ -402,6 +406,128 @@ class ResultPanel(QWidget):
         return group
 
     # -------------------------------------------------------------------------
+    # 섹션 3-1. ISO 14801 피로 평가 요약
+    # -------------------------------------------------------------------------
+    def _create_fatigue_section(self) -> QGroupBox:
+        group = QGroupBox("3-1. ISO 14801 피로 평가 요약", self)
+        vbox = QVBoxLayout(group)
+        vbox.setContentsMargins(6, 6, 6, 6)
+        vbox.setSpacing(6)
+
+        # 1. 규격 기하 및 하중 자동 검증 상태
+        self.lbl_iso_geom_status = QLabel("규격 검증: 미평가", group)
+        self.lbl_iso_geom_status.setStyleSheet("color: #abb2bf; font-size: 11px; font-weight: bold;")
+        self.lbl_iso_geom_status.setWordWrap(True)
+        vbox.addWidget(self.lbl_iso_geom_status)
+
+        # 2. 핫스팟 식별 부위
+        self.lbl_iso_hotspot = QLabel("핫스팟 위치: --", group)
+        self.lbl_iso_hotspot.setStyleSheet("color: #abb2bf; font-size: 11px;")
+        self.lbl_iso_hotspot.setWordWrap(True)
+        vbox.addWidget(self.lbl_iso_hotspot)
+
+        # 3. 예측 피로한계 하중 (FS = 1.0)
+        self.lbl_iso_f_limit = QLabel("예측 피로한계 하중 (FS=1.0): --", group)
+        self.lbl_iso_f_limit.setStyleSheet("color: #abb2bf; font-size: 11px;")
+        vbox.addWidget(self.lbl_iso_f_limit)
+
+        # 4. 문헌 교차 검증 상태 (정직한 한계: 없으면 "교차 검증 미실시")
+        self.lbl_iso_cross_validation = QLabel("교차 검증: 교차 검증 미실시", group)
+        self.lbl_iso_cross_validation.setStyleSheet("""
+            background-color: #2c313a;
+            color: #dcdfe4;
+            border: 1px solid #4b5263;
+            border-radius: 3px;
+            padding: 4px;
+            font-size: 11px;
+            font-weight: bold;
+        """)
+        self.lbl_iso_cross_validation.setWordWrap(True)
+        vbox.addWidget(self.lbl_iso_cross_validation)
+
+        # 5. 세부 안내 설명 라벨
+        self.lbl_iso_details = QLabel("", group)
+        self.lbl_iso_details.setStyleSheet("color: #5c6370; font-size: 10px;")
+        self.lbl_iso_details.setWordWrap(True)
+        vbox.addWidget(self.lbl_iso_details)
+
+        group.setVisible(False)  # 피로 해석 결과가 로드될 때 표시
+        return group
+
+    def update_fatigue_iso14801_summary(self, batch_result: Any) -> None:
+        """Update ISO 14801 fatigue verification summary in result panel.
+
+        Args:
+            batch_result: ISO14801BatchResult or dict with validation metrics.
+        """
+        self.group_fatigue.setVisible(True)
+
+        val_rep = getattr(batch_result, "validation_report", None)
+        hotspot = getattr(batch_result, "hotspot", None)
+        f_limit = getattr(batch_result, "predicted_fatigue_limit_N", 0.0)
+        bench = getattr(batch_result, "benchmark_comparison", None)
+
+        # 1. Geometric validation
+        if val_rep:
+            if val_rep.passed:
+                self.lbl_iso_geom_status.setText(
+                    f"규격 검증: 통과 (경사 {val_rep.measured_angle_deg:.1f}°, 암 {val_rep.measured_lever_arm_mm:.1f}mm, R={val_rep.measured_stress_ratio_R:.2f})"
+                )
+                self.lbl_iso_geom_status.setStyleSheet("color: #98c379; font-weight: bold; font-size: 11px;")
+            else:
+                self.lbl_iso_geom_status.setText("규격 검증: 불일치 (치수/각도 공차 초과)")
+                self.lbl_iso_geom_status.setStyleSheet("color: #e06c75; font-weight: bold; font-size: 11px;")
+
+        # 2. Hotspot
+        if hotspot:
+            valid_txt = " (임상/실험적 호발 부위 일치)" if hotspot.is_clinically_valid else " (비전형 부위)"
+            self.lbl_iso_hotspot.setText(f"핫스팟 위치: {hotspot.hotspot_region_name}{valid_txt}")
+            self.lbl_iso_hotspot.setStyleSheet("color: #dcdfe4; font-size: 11px;")
+
+        # 3. Predicted fatigue limit
+        if f_limit > 0.0:
+            self.lbl_iso_f_limit.setText(f"예측 피로한계 하중 (FS=1.0): {f_limit:.1f} N")
+            self.lbl_iso_f_limit.setStyleSheet("color: #61afef; font-weight: bold; font-size: 11px;")
+
+        # 4. Literature cross-validation (Honest limitation)
+        if bench:
+            if bench.status == "GOOD":
+                self.lbl_iso_cross_validation.setText(f"교차 검증: {bench.status_display_text}")
+                self.lbl_iso_cross_validation.setStyleSheet("""
+                    background-color: #1e3a29;
+                    color: #98c379;
+                    border: 1px solid #2e6040;
+                    border-radius: 3px;
+                    padding: 4px;
+                    font-size: 11px;
+                    font-weight: bold;
+                """)
+            elif bench.status == "RECHECK_NEEDED":
+                self.lbl_iso_cross_validation.setText(f"교차 검증: {bench.status_display_text}")
+                self.lbl_iso_cross_validation.setStyleSheet("""
+                    background-color: #4c2222;
+                    color: #e06c75;
+                    border: 1px solid #7c3535;
+                    border-radius: 3px;
+                    padding: 4px;
+                    font-size: 11px;
+                    font-weight: bold;
+                """)
+            else:
+                # UNVERIFIED
+                self.lbl_iso_cross_validation.setText("교차 검증: 교차 검증 미실시 (공개 자료 부재)")
+                self.lbl_iso_cross_validation.setStyleSheet("""
+                    background-color: #3e3820;
+                    color: #e5c07b;
+                    border: 1px solid #6b5a2b;
+                    border-radius: 3px;
+                    padding: 4px;
+                    font-size: 11px;
+                    font-weight: bold;
+                """)
+            self.lbl_iso_details.setText(bench.details)
+
+    # -------------------------------------------------------------------------
     # 섹션 4. 내보내기 (Export)
     # -------------------------------------------------------------------------
     def _create_export_section(self) -> QGroupBox:
@@ -461,6 +587,7 @@ class ResultPanel(QWidget):
         """Enable or disable result display and statistics widgets."""
         self.group_display.setEnabled(enabled)
         self.group_stats.setEnabled(enabled)
+        self.group_fatigue.setEnabled(enabled)
         self.btn_export_csv.setEnabled(enabled)
         self.btn_export_stats.setEnabled(enabled)
         self.btn_save_screenshot.setEnabled(enabled)
