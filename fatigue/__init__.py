@@ -40,6 +40,19 @@ from .io_frd import (
     extract_cyclic_stresses_with_ratio,
 )
 
+from .cantilever_benchmark import (
+    CantileverTheory,
+    CantileverBenchmarkResult,
+    calculate_cantilever_theory,
+    build_cantilever_model_and_bc,
+    run_cantilever_benchmark,
+)
+from .iso14801 import (
+    ISO14801LoadMode,
+    ISO14801Config,
+    run_iso14801_pipeline,
+)
+
 __all__ = [
     # models
     "FatigueMaterial",
@@ -71,6 +84,17 @@ __all__ = [
     "extract_cyclic_stresses_from_frd",
     "extract_cyclic_stresses_from_two_frds",
     "extract_cyclic_stresses_with_ratio",
+    # cantilever_benchmark
+    "CantileverTheory",
+    "CantileverBenchmarkResult",
+    "calculate_cantilever_theory",
+    "build_cantilever_model_and_bc",
+    "run_cantilever_benchmark",
+    # iso14801
+    "ISO14801LoadMode",
+    "ISO14801Config",
+    "run_iso14801_pipeline",
 ]
+
 
 
