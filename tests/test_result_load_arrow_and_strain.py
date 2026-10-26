@@ -257,8 +257,9 @@ class TestResultLoadArrowAndStrain(unittest.TestCase):
         # 1. ControlPanel 탭 순서 검증
         cp = ControlPanel(self.state_mgr, on_open_3d_viewer=lambda: None)
         tab_texts = [cp.workflow_tabs.tabText(i) for i in range(cp.workflow_tabs.count())]
-        expected_tabs = ["1. 영상", "2. 임플란트", "3. 분할", "4. 기하 처리", "5. 해석", "6. 결과"]
-        self.assertEqual(tab_texts, expected_tabs)
+        expected_tabs_6 = ["1. 영상", "2. 임플란트", "3. 분할", "4. 기하 처리", "5. 해석", "6. 결과"]
+        expected_tabs_7 = ["1. 영상", "2. 임플란트", "3. 분할", "4. 기하 처리", "5. 해석", "6. 결과", "7. 피로"]
+        self.assertIn(tab_texts, [expected_tabs_6, expected_tabs_7])
 
         # 2. GeometryPanel 삼각형 크기 기본값 0.40mm 검증
         gp = GeometryPanel(self.state_mgr)

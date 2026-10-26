@@ -1,0 +1,38 @@
+{
+  "benchmark_id": "step_5_6_iso14801",
+  "title": "ISO 14801 Dental Implant Dynamic Fatigue Benchmark Baseline",
+  "created_at": "2026-10-26T20:20:00+09:00",
+  "geometric_specifications": {
+    "nominal_angle_deg": 30.0,
+    "angle_tolerance_deg": 2.0,
+    "nominal_lever_arm_mm": 11.0,
+    "lever_arm_tolerance_mm": 0.5,
+    "nominal_resorption_depth_mm": 3.0,
+    "resorption_depth_tolerance_mm": 0.2,
+    "stress_ratio_R": 0.1,
+    "stress_ratio_tolerance": 0.02
+  },
+  "clinical_hotspot_criteria": {
+    "valid_regions": [
+      "screw",
+      "fixture_neck",
+      "abutment_neck"
+    ],
+    "fixture_neck_z_max_mm": 3.0,
+    "clinical_rationale": "High-cycle fatigue failure predominantly occurs at the abutment screw or fixture collar/neck under inclined cyclic load."
+  },
+  "literature_benchmarks": {
+    "gehrke_2020_conical": {
+      "implant_system": "Ti-6Al-4V Conical Connection",
+      "reference": "Gehrke et al. (2020), Clin Oral Implants Res",
+      "literature_fatigue_limit_N": 316.0,
+      "tolerance_pct": 30.0
+    }
+  },
+  "cross_validation_policy": {
+    "unverified_status": "UNVERIFIED",
+    "unverified_display_text": "교차 검증 미실시 (공개 자료 부재)",
+    "unverified_rationale": "Honest limitation reporting when manufacturer or peer-reviewed fatigue test data is absent."
+  },
+  "status": "PASS"
+}

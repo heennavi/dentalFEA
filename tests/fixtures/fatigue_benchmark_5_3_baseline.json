@@ -1,0 +1,54 @@
+{
+  "benchmark_id": "step_5_3_cantilever_beam",
+  "title": "Cantilever Beam Pure Bending Fatigue Benchmark Baseline",
+  "created_at": "2026-10-26T20:20:00+09:00",
+  "geometry": {
+    "length_L_mm": 100.0,
+    "width_b_mm": 10.0,
+    "height_h_mm": 10.0,
+    "moment_of_inertia_I_mm4": 833.3333333333334,
+    "section_modulus_Z_mm3": 166.66666666666669
+  },
+  "loading": {
+    "force_max_N": 1000.0,
+    "force_min_N": 100.0,
+    "stress_ratio_R": 0.1,
+    "moment_max_Nmm": 100000.0,
+    "moment_min_Nmm": 10000.0
+  },
+  "material": {
+    "name": "Ti-6Al-4V",
+    "yield_strength_Sy_MPa": 795.0,
+    "tensile_strength_Sut_MPa": 860.0,
+    "fatigue_limit_Se_MPa": 510.0
+  },
+  "analytical_theory": {
+    "sigma_max_MPa": 599.9999999999999,
+    "sigma_min_MPa": 59.99999999999999,
+    "sigma_a_MPa": 269.99999999999994,
+    "sigma_m_MPa": 329.99999999999994,
+    "safety_factors": {
+      "goodman": 1.0951310861423222,
+      "soderberg": 1.0587544065804937,
+      "gerber": 1.3682284212116016
+    }
+  },
+  "fea_calculix_validation": {
+    "element_type": "C3D10",
+    "boundary_condition": "Isostatic 3-2-1 kinematics without Poisson constraint",
+    "surface_nodes_evaluated": 9,
+    "fea_root_sigma_max_mean_MPa": 600.9575,
+    "fea_root_sigma_min_mean_MPa": 60.09575,
+    "fea_root_sigma_a_mean_MPa": 270.430875,
+    "fea_root_sigma_m_mean_MPa": 330.526625,
+    "fea_root_fs_goodman_mean": 1.0934,
+    "error_percentages": {
+      "stress_error_mean_pct": 0.448,
+      "stress_error_max_pct": 1.189,
+      "fs_goodman_error_mean_pct": 0.448,
+      "fs_goodman_error_max_pct": 1.173
+    },
+    "tolerance_pct": 3.0,
+    "status": "PASS"
+  }
+}
