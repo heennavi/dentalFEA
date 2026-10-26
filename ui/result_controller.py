@@ -272,6 +272,12 @@ class ResultController(QObject):
     # -------------------------------------------------------------------------
     # 3D 뷰어 표시 위임 메서드
     # -------------------------------------------------------------------------
+    def update_results(self, rs: ResultSet) -> None:
+        """Update result set in StateManager and synchronize to 3D view controller."""
+        self.state_mgr.set_result_set(rs)
+        if self.view_controller is not None:
+            self.view_controller.update_results(rs)
+
     def set_field(self, field_name: str) -> None:
         if self.view_controller is not None:
             self.view_controller.set_field(field_name)

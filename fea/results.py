@@ -138,6 +138,13 @@ class ResultSet:
     strain6: np.ndarray | None = None   # (Ntot,6)
     rf: np.ndarray | None = None        # (Ntot,3) 반력 N
     source_frd: str = ""              # 원본 .frd 경로
+    # Phase 5 피로 해석 확장 필드
+    fatigue_fs: np.ndarray | None = None          # (Ntot,) 피로 안전계수 (Safety Factor against Se)
+    fatigue_life: np.ndarray | None = None        # (Ntot,) 피로 수명 (N_f cycles, inf for infinite)
+    fatigue_damage: np.ndarray | None = None      # (Ntot,) 누적 손상률 D = target_cycles / N_f
+    fatigue_sigma_a: np.ndarray | None = None     # (Ntot,) 응력 진폭 sigma_a (MPa)
+    fatigue_sigma_m: np.ndarray | None = None     # (Ntot,) 평균 응력 sigma_m (MPa)
+    fatigue_hotspot_info: Dict[str, Any] | None = None  # 핫스팟 식별 정보
 
     def slice_for_part(self, model: MeshModel, part_name: str) -> slice:
         """
@@ -215,5 +222,21 @@ class ResultSet:
         else:
             res["total_rf_N"] = None
             res["total_rf_mag_N"] = None
+
+        # Fatigue metrics
+        if self.fatigue_fs is not None and len(self.fatigue_fs) > 0:
+            valid_fs = self.fatigue_fs[~np.isnan(self.fatigue_fs)]
+            res["min_fatigue_fs"] = float(np.min(valid_fs)) if len(valid_fs) > 0 else None
+        else:
+            res["min_fatigue_fs"] = None
+
+        if self.fatigue_damage is not None and len(self.fatigue_damage) > 0:
+            valid_d = self.fatigue_damage[~np.isnan(self.fatigue_damage)]
+            res["max_fatigue_damage"] = float(np.max(valid_d)) if len(valid_d) > 0 else None
+        else:
+            res["max_fatigue_damage"] = None
+
+        if self.fatigue_hotspot_info is not None:
+            res["fatigue_hotspot"] = self.fatigue_hotspot_info
 
         return res

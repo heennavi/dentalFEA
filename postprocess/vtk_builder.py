@@ -179,6 +179,42 @@ def attach_results(
             vtk_strain.SetName("equiv_strain")
             point_data.AddArray(vtk_strain)
 
+    # 1-1. Phase 5 피로 해석 필드 부착
+    if getattr(rs, "fatigue_fs", None) is not None:
+        fs_part = np.ascontiguousarray(rs.fatigue_fs[part_slice], dtype=np.float64)
+        if len(fs_part) == n_nodes:
+            vtk_fs = numpy_support.numpy_to_vtk(fs_part, deep=True)
+            vtk_fs.SetName("fatigue_fs")
+            point_data.AddArray(vtk_fs)
+
+    if getattr(rs, "fatigue_life", None) is not None:
+        life_part = np.ascontiguousarray(rs.fatigue_life[part_slice], dtype=np.float64)
+        if len(life_part) == n_nodes:
+            vtk_life = numpy_support.numpy_to_vtk(life_part, deep=True)
+            vtk_life.SetName("fatigue_life")
+            point_data.AddArray(vtk_life)
+
+    if getattr(rs, "fatigue_damage", None) is not None:
+        dmg_part = np.ascontiguousarray(rs.fatigue_damage[part_slice], dtype=np.float64)
+        if len(dmg_part) == n_nodes:
+            vtk_dmg = numpy_support.numpy_to_vtk(dmg_part, deep=True)
+            vtk_dmg.SetName("fatigue_damage")
+            point_data.AddArray(vtk_dmg)
+
+    if getattr(rs, "fatigue_sigma_a", None) is not None:
+        sa_part = np.ascontiguousarray(rs.fatigue_sigma_a[part_slice], dtype=np.float64)
+        if len(sa_part) == n_nodes:
+            vtk_sa = numpy_support.numpy_to_vtk(sa_part, deep=True)
+            vtk_sa.SetName("fatigue_sigma_a")
+            point_data.AddArray(vtk_sa)
+
+    if getattr(rs, "fatigue_sigma_m", None) is not None:
+        sm_part = np.ascontiguousarray(rs.fatigue_sigma_m[part_slice], dtype=np.float64)
+        if len(sm_part) == n_nodes:
+            vtk_sm = numpy_support.numpy_to_vtk(sm_part, deep=True)
+            vtk_sm.SetName("fatigue_sigma_m")
+            point_data.AddArray(vtk_sm)
+
     # 2. 요소 데이터(Cell Data) 부착 - E_MPa
     if material_assignment is not None and part_name in material_assignment.element_material:
         elem_mat_indices = material_assignment.element_material[part_name]

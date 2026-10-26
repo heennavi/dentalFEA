@@ -188,6 +188,12 @@ class ResultPanel(QWidget):
         self.combo_field.addItem("최소 주응력 (Min Principal)", "s_min_principal")
         self.combo_field.addItem("등가 변형률 (Equivalent Strain, µε)", "equiv_strain")
         self.combo_field.addItem("요소 탄성계수 (Modulus)", "E_MPa")
+        # Phase 5 피로 필드
+        self.combo_field.addItem("피로 안전계수 (Safety Factor, FS)", "fatigue_fs")
+        self.combo_field.addItem("피로 수명 (Fatigue Life, Nf)", "fatigue_life")
+        self.combo_field.addItem("누적 손상률 (Cumulative Damage, D)", "fatigue_damage")
+        self.combo_field.addItem("응력 진폭 (Stress Amplitude, σa)", "fatigue_sigma_a")
+        self.combo_field.addItem("평균 응력 (Mean Stress, σm)", "fatigue_sigma_m")
         self.combo_field.currentIndexChanged.connect(self._on_field_changed)
         row_field.addWidget(self.combo_field)
         vbox.addLayout(row_field)

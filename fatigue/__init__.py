@@ -85,6 +85,16 @@ from .preload_contact import (
     run_simplified_model_analysis,
     compare_simplified_vs_detailed,
 )
+from .ui_bridge import (
+    evaluate_fatigue_on_result_set,
+    run_benchmark_case_5_3,
+    run_benchmark_case_5_6,
+)
+from .report_generator import (
+    generate_fatigue_report_html,
+    generate_fatigue_report_text,
+    DISCLAIMER_TEXT,
+)
 
 __all__ = [
     # models
@@ -158,6 +168,13 @@ __all__ = [
     "run_preload_contact_analysis",
     "run_simplified_model_analysis",
     "compare_simplified_vs_detailed",
+    # ui_bridge & reports
+    "evaluate_fatigue_on_result_set",
+    "run_benchmark_case_5_3",
+    "run_benchmark_case_5_6",
+    "generate_fatigue_report_html",
+    "generate_fatigue_report_text",
+    "DISCLAIMER_TEXT",
 ]
 
 

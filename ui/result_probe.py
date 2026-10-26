@@ -621,6 +621,97 @@ class ResultProbe(QObject):
         """Alias for mark_maximum for compatibility with ResultController."""
         return self.mark_maximum(field=field, part_name=part_name, focus_camera=focus_camera)
 
+    def mark_fatigue_hotspot(
+        self,
+        hotspot_data: Dict[str, Any],
+        focus_camera: bool = False,
+    ) -> Optional[dict]:
+        """
+        Mark the critical fatigue hotspot location with a distinct 3D marker and callout.
+
+        Args:
+            hotspot_data: Dict containing 'coordinates' (or 'coord'), 'part_name', 'node_id',
+                          'min_safety_factor', 'max_stress_MPa', 'hotspot_region_name'.
+            focus_camera: If True, center camera on hotspot location.
+
+        Returns:
+            dict of marked info.
+        """
+        if self._renderer is None:
+            return None
+
+        coord = hotspot_data.get("coordinates")
+        if coord is None:
+            coord = hotspot_data.get("coord")
+        if coord is None:
+            return None
+
+        coord = [float(c) for c in coord]
+        part = str(hotspot_data.get("part_name", "implant"))
+        node_id = hotspot_data.get("node_id", -1)
+        fs = hotspot_data.get("min_safety_factor", 0.0)
+        s_max = hotspot_data.get("max_stress_MPa", 0.0)
+        region = hotspot_data.get("hotspot_region_name", "")
+
+        self.clear_max_marker()
+
+        # 구 마커 (밝은 마젠타-레드, 반경 0.6mm)
+        sphere = vtk.vtkSphereSource()
+        sphere.SetCenter(*coord)
+        sphere.SetRadius(0.6)
+        sphere.SetThetaResolution(16)
+        sphere.SetPhiResolution(16)
+
+        mapper = vtk.vtkPolyDataMapper()
+        mapper.SetInputConnection(sphere.GetOutputPort())
+
+        actor = vtk.vtkActor()
+        actor.SetMapper(mapper)
+        actor.GetProperty().SetColor(1.0, 0.2, 0.1)  # Hot orange-red
+        actor.GetProperty().SetAmbient(0.85)
+
+        # 캡션 액터
+        lines = [f"[FATIGUE HOTSPOT] {part} (#{node_id})"]
+        if region:
+            lines.append(f"Region: {region}")
+        lines.append(f"Min FS: {fs:.3f}")
+        if s_max > 0.0:
+            lines.append(f"Max Stress: {s_max:.1f} MPa")
+        caption_text = "\n".join(lines)
+
+        caption = vtk.vtkCaptionActor2D()
+        caption.SetAttachmentPoint(*coord)
+        caption.SetCaption(caption_text)
+        caption.BorderOff()
+        caption.GetCaptionTextProperty().SetFontSize(11)
+        caption.GetCaptionTextProperty().SetColor(1.0, 0.85, 0.2)  # Gold/Yellow
+        caption.GetCaptionTextProperty().SetBold(True)
+        caption.GetCaptionTextProperty().SetShadow(True)
+
+        self._renderer.AddActor(actor)
+        self._renderer.AddActor(caption)
+        self._max_sphere_actor = actor
+        self._max_caption_actor = caption
+
+        if focus_camera:
+            cam = self._renderer.GetActiveCamera()
+            if cam is not None:
+                cam.SetFocalPoint(*coord)
+
+        if self._controller is not None:
+            self._controller._render()
+
+        info = {
+            "node_idx": node_id,
+            "part_name": part,
+            "coord": coord,
+            "min_safety_factor": fs,
+            "max_stress_MPa": s_max,
+            "region": region,
+        }
+        self.max_marked.emit(info)
+        return info
+
     def clear_probe_marker(self) -> None:
         """Remove probe sphere marker (yellow) and caption from the renderer."""
         changed = False

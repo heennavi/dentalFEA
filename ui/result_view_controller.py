@@ -55,6 +55,36 @@ FIELD_DISPLAY_CONFIG = {
         "is_cell": False,
         "default_cmap": "rainbow",
     },
+    "fatigue_fs": {
+        "title": "Fatigue Safety Factor (FS)",
+        "unit": "-",
+        "is_cell": False,
+        "default_cmap": "coolwarm",
+    },
+    "fatigue_life": {
+        "title": "Fatigue Life (Nf)",
+        "unit": "cycles",
+        "is_cell": False,
+        "default_cmap": "viridis",
+    },
+    "fatigue_damage": {
+        "title": "Cumulative Damage (D)",
+        "unit": "-",
+        "is_cell": False,
+        "default_cmap": "rainbow",
+    },
+    "fatigue_sigma_a": {
+        "title": "Stress Amplitude (σa)",
+        "unit": "MPa",
+        "is_cell": False,
+        "default_cmap": "rainbow",
+    },
+    "fatigue_sigma_m": {
+        "title": "Mean Stress (σm)",
+        "unit": "MPa",
+        "is_cell": False,
+        "default_cmap": "coolwarm",
+    },
 }
 
 
@@ -247,6 +277,34 @@ class ResultViewController(QObject):
             self.window.set_result_view_mode(True)
 
         self._render()
+
+    def update_results(self, rs: ResultSet) -> None:
+        """
+        Re-attach updated result fields (such as newly computed fatigue arrays)
+        to existing vtkUnstructuredGrids without recreating actors or mappers.
+        """
+        self._rs = rs
+        if self._model is None or not self._grids:
+            return
+
+        for part in self._model.parts:
+            grid = self._grids.get(part.name)
+            if grid is not None:
+                attach_results(
+                    grid, rs, self._model, part.name,
+                    deform_scale=self._deform_scale,
+                    material_assignment=self._materials,
+                )
+            linear_grid = self._linear_grids.get(part.name)
+            if linear_grid is not None and linear_grid != grid:
+                attach_results(
+                    linear_grid, rs, self._model, part.name,
+                    deform_scale=self._deform_scale,
+                    material_assignment=self._materials,
+                )
+
+        # 현재 선택된 필드 및 컬러 범위 재적용
+        self.set_field(self._current_field)
 
     def clear(self) -> None:
         """결과 액터를 모두 제거하고 원래 장면의 액터 가시성을 완벽히 복원."""

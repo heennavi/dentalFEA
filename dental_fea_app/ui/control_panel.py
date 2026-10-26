@@ -21,6 +21,7 @@ from dental_fea_app.ui.geometry.geometry_panel import GeometryPanel
 from dental_fea_app.ui.fea_panel import FeaPanel
 from ui.result_panel import ResultPanel
 from ui.result_controller import ResultController
+from dental_fea_app.ui.fatigue_panel import FatiguePanel
 import math
 
 
@@ -236,27 +237,56 @@ class ControlPanel(QWidget):
         self.result_panel.controller = self.result_controller
         tabs.addTab(self.result_panel, "6. 결과")
 
+        # 탭 7: Phase 5 FEA 피로 해석 패널
+        self.fatigue_panel = FatiguePanel(self.state_mgr, self)
+        self.fatigue_panel.field_changed_requested.connect(self._on_fatigue_field_requested)
+        self.fatigue_panel.hotspot_marked_requested.connect(self._on_fatigue_hotspot_requested)
+        self.fatigue_panel.hotspot_clear_requested.connect(self._on_fatigue_hotspot_clear_requested)
+        tabs.addTab(self.fatigue_panel, "7. 피로")
+
         # 결과 로드/무효화 시 탭 활성화 및 전환 연결
         self.result_controller.results_loaded.connect(self._on_results_loaded)
         self.result_controller.results_cleared.connect(self._on_results_cleared)
 
         tabs.currentChanged.connect(self._on_workflow_tab_changed)
 
-        # CT 이미지가 열리기 전에는 분할(1), 임플란트(2), 기하 처리(3), 해석(4), 결과(5) 비활성화
+        # CT 이미지가 열리기 전에는 분할(1), 임플란트(2), 기하 처리(3), 해석(4), 결과(5), 피로(6) 비활성화
         tabs.setTabEnabled(1, False)
         tabs.setTabEnabled(2, False)
         tabs.setTabEnabled(3, False)
         tabs.setTabEnabled(4, False)
         tabs.setTabEnabled(5, False)
+        tabs.setTabEnabled(6, False)
 
         return tabs
 
     def _on_workflow_tab_changed(self, index: int):
         """워크플로 탭 전환 시 3D 볼륨 창의 결과 뷰 모드 및 임플란트 기즈모 복구 연동"""
-        is_result_tab = (index == 5)
+        is_result_tab = (index in (5, 6))
         mw = self.window()
         if mw is not None and hasattr(mw, "volume_window") and mw.volume_window is not None:
             mw.volume_window.set_result_view_mode(is_result_tab)
+
+    def _on_fatigue_field_requested(self, field_name: str):
+        """피로 패널에서 컬러 맵 전환 요청 시 3D 뷰어 및 ResultPanel 필드 동기화"""
+        if hasattr(self, "result_panel") and self.result_panel is not None:
+            idx = self.result_panel.combo_field.findData(field_name)
+            if idx >= 0:
+                self.result_panel.combo_field.setCurrentIndex(idx)
+        if hasattr(self, "result_controller") and self.result_controller is not None:
+            self.result_controller.set_field(field_name)
+
+    def _on_fatigue_hotspot_requested(self, hotspot_dict: dict):
+        """피로 패널에서 핫스팟 마커 요청 시 3D 프로브 마커 표시"""
+        if hasattr(self, "result_controller") and self.result_controller is not None:
+            if hasattr(self.result_controller, "probe") and self.result_controller.probe is not None:
+                self.result_controller.probe.mark_fatigue_hotspot(hotspot_dict, focus_camera=True)
+
+    def _on_fatigue_hotspot_clear_requested(self):
+        """피로 패널에서 핫스팟 마커 해제 요청 시 3D 프로브 마커 제거"""
+        if hasattr(self, "result_controller") and self.result_controller is not None:
+            if hasattr(self.result_controller, "probe") and self.result_controller.probe is not None:
+                self.result_controller.probe.clear_max_marker()
 
     # --- 이벤트 핸들러 ---
     def _load_dicom_folder(self):
@@ -309,11 +339,13 @@ class ControlPanel(QWidget):
     def _on_results_loaded(self, rs, stats):
         if hasattr(self, "workflow_tabs"):
             self.workflow_tabs.setTabEnabled(5, True)
+            self.workflow_tabs.setTabEnabled(6, True)
             self.workflow_tabs.setCurrentIndex(5)
 
     def _on_results_cleared(self):
         if hasattr(self, "workflow_tabs"):
             self.workflow_tabs.setTabEnabled(5, False)
+            self.workflow_tabs.setTabEnabled(6, False)
 
     def _on_volume_loaded(self, vtk_image):
         has_vol = (vtk_image is not None)
@@ -323,6 +355,7 @@ class ControlPanel(QWidget):
             self.workflow_tabs.setTabEnabled(3, has_vol)
             self.workflow_tabs.setTabEnabled(4, has_vol)
             self.workflow_tabs.setTabEnabled(5, False)
+            self.workflow_tabs.setTabEnabled(6, False)
 
         if hasattr(self, "lbl_meta_dim"):
             dims = self.state_mgr.dimensions
